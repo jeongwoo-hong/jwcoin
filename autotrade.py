@@ -2,9 +2,15 @@ import os
 import json
 import time
 import pandas as pd
+import numpy as np
 from dotenv import load_dotenv
 import pyupbit
 from openai import OpenAI
+import ta
+from ta.trend import MACD, SMAIndicator, EMAIndicator
+from ta.momentum import RSIIndicator, StochasticOscillator, WilliamsRIndicator
+from ta.volatility import BollingerBands, AverageTrueRange
+from ta.volume import OnBalanceVolumeIndicator, AccDistIndexIndicator, MFIIndicator
 
 # 환경 변수 로드
 load_dotenv()
@@ -45,30 +51,6 @@ def get_orderbook_data():
     """BTC 오더북(호가) 데이터를 가져옵니다."""
     orderbook = pyupbit.get_orderbook(ticker="KRW-BTC")
     return orderbook
-
-def get_chart_data():
-    """BTC 차트 데이터를 가져옵니다."""
-    # 30일 일봉 데이터
-    daily_df = pyupbit.get_ohlcv("KRW-BTC", count=30, interval="day")
-    
-    # 24시간 시간봉 데이터
-    hourly_df = pyupbit.get_ohlcv("KRW-BTC", count=24, interval="minute60")
-    
-    return {
-        "daily": daily_df.to_dict('records'),
-        "hourly": hourly_df.to_dict('records')
-    }
-
-# TA ---
-
-import pandas as pd
-import numpy as np
-import pyupbit
-import ta
-from ta.trend import MACD, SMAIndicator, EMAIndicator
-from ta.momentum import RSIIndicator, StochasticOscillator, WilliamsRIndicator
-from ta.volatility import BollingerBands, AverageTrueRange
-from ta.volume import OnBalanceVolumeIndicator, AccDistIndexIndicator, MFIIndicator
 
 def add_indicators(df):
     """
@@ -201,60 +183,29 @@ def add_indicators(df):
     
     return df
 
-def get_chart_with_indicators(ticker="KRW-BTC"):
-    """
-    특정 암호화폐의 일봉과 시간봉 데이터를 가져와 기술적 분석 지표를 추가합니다.
-    
-    Parameters:
-    -----------
-    ticker : str
-        암호화폐 티커 (예: "KRW-BTC")
-        
-    Returns:
-    --------
-    tuple (pandas.DataFrame, pandas.DataFrame)
-        기술적 분석 지표가 추가된 일봉과 시간봉 데이터
-    """
-    # 일봉 데이터 가져오기 (최근 200일)
-    daily_df = pyupbit.get_ohlcv(ticker, interval="day", count=200)
-    
-    # 시간봉 데이터 가져오기 (최근 200시간)
-    hourly_df = pyupbit.get_ohlcv(ticker, interval="minute60", count=200)
-    
-    # 각 데이터에 기술적 분석 지표 추가
+def get_chart_data():
+    """BTC 차트 데이터와 기술적 분석 지표를 가져옵니다."""
+    # 30일 일봉 데이터
+    daily_df = pyupbit.get_ohlcv("KRW-BTC", count=30, interval="day")
     daily_df = add_indicators(daily_df)
+    
+    # 24시간 시간봉 데이터
+    hourly_df = pyupbit.get_ohlcv("KRW-BTC", count=24, interval="minute60")
     hourly_df = add_indicators(hourly_df)
     
-    return daily_df, hourly_df
+    return {
+        "daily": daily_df.to_dict('records'),
+        "hourly": hourly_df.to_dict('records'),
+        "daily_df": daily_df,  # DataFrame 객체도 함께 반환
+        "hourly_df": hourly_df  # DataFrame 객체도 함께 반환
+    }
 
-def print_recent_indicators(df, periods=5, title="최근 기술적 분석 지표"):
+def analyze_technical_indicators(df):
     """
-    최근 몇 개 기간의 주요 기술적 분석 지표를 출력합니다.
-    
-    Parameters:
-    -----------
-    df : pandas.DataFrame
-        기술적 분석 지표가 추가된 DataFrame
-    periods : int
-        출력할 최근 기간 수
-    title : str
-        출력할 제목
+    기술적 분석 지표를 해석하여 시장 상황을 분석합니다.
     """
-    print(f"\n===== {title} =====")
-    
-    # 주요 지표만 선택
-    important_indicators = [
-        'close', 'sma20', 'ema12', 'rsi14', 'macd', 'macd_signal', 
-        'stoch_k', 'stoch_d', 'bb_high', 'bb_low', 'atr', 'mfi'
-    ]
-    
-    # 최근 몇 개 기간만 선택하여 출력
-    print(df[important_indicators].tail(periods))
-    
-    # 추가 분석: 최근 지표값에 따른 시장 상황 해석
+    result = {}
     latest = df.iloc[-1]
-    
-    print("\n----- 시장 상황 해석 -----")
     
     # RSI 해석
     rsi = latest['rsi14']
@@ -264,7 +215,7 @@ def print_recent_indicators(df, periods=5, title="최근 기술적 분석 지표
         rsi_status = "과매도 상태 (매수 기회)"
     else:
         rsi_status = "중립"
-    print(f"RSI(14): {rsi:.2f} - {rsi_status}")
+    result["rsi"] = {"value": rsi, "status": rsi_status}
     
     # MACD 해석
     macd = latest['macd']
@@ -282,7 +233,12 @@ def print_recent_indicators(df, periods=5, title="최근 기술적 분석 지표
     else:
         macd_status = "중립"
     
-    print(f"MACD: {macd:.2f}, Signal: {macd_signal:.2f}, Diff: {macd_diff:.2f} - {macd_status}")
+    result["macd"] = {
+        "value": macd, 
+        "signal": macd_signal, 
+        "diff": macd_diff, 
+        "status": macd_status
+    }
     
     # 볼린저 밴드 해석
     bb_pband = latest['bb_pband']
@@ -299,7 +255,14 @@ def print_recent_indicators(df, periods=5, title="최근 기술적 분석 지표
     else:
         bb_status = "중앙 밴드 부근 (추세 탐색)"
     
-    print(f"볼린저 밴드: 위치={bb_pband:.2f}, 폭={bb_width:.2f} - {bb_status}")
+    result["bollinger"] = {
+        "upper": latest['bb_high'],
+        "middle": latest['bb_mid'],
+        "lower": latest['bb_low'],
+        "width": bb_width,
+        "pband": bb_pband,
+        "status": bb_status
+    }
     
     # 스토캐스틱 해석
     stoch_k = latest['stoch_k']
@@ -316,7 +279,11 @@ def print_recent_indicators(df, periods=5, title="최근 기술적 분석 지표
     else:
         stoch_status = "중립"
     
-    print(f"스토캐스틱: K={stoch_k:.2f}, D={stoch_d:.2f} - {stoch_status}")
+    result["stochastic"] = {
+        "k": stoch_k,
+        "d": stoch_d,
+        "status": stoch_status
+    }
     
     # MFI(자금 흐름 지수) 해석
     mfi = latest['mfi']
@@ -326,26 +293,121 @@ def print_recent_indicators(df, periods=5, title="최근 기술적 분석 지표
         mfi_status = "과매도 상태 (돈이 유입될 가능성)"
     else:
         mfi_status = "중립"
-    print(f"MFI: {mfi:.2f} - {mfi_status}")
-
-# 메인 실행 코드
-if __name__ == "__main__":
-    # 비트코인 데이터 가져오기 및 지표 계산
-    daily_df, hourly_df = get_chart_with_indicators("KRW-BTC")
     
-    # 일봉 데이터의 주요 지표 출력
-    print_recent_indicators(daily_df, periods=5, title="비트코인 일봉 기술적 분석 지표")
+    result["mfi"] = {
+        "value": mfi,
+        "status": mfi_status
+    }
     
-    # 시간봉 데이터의 주요 지표 출력
-    print_recent_indicators(hourly_df, periods=5, title="비트코인 시간봉 기술적 분석 지표")
+    # 이동평균선 정보
+    result["moving_averages"] = {
+        "sma5": latest['sma5'],
+        "sma20": latest['sma20'],
+        "sma60": latest['sma60'],
+        "ema12": latest['ema12'],
+        "ema26": latest['ema26'],
+        "status": "상승세" if latest['sma5'] > latest['sma20'] else "하락세"
+    }
     
-    # 데이터 저장 (선택 사항)
-    # daily_df.to_csv("btc_daily_with_indicators.csv")
-    # hourly_df.to_csv("btc_hourly_with_indicators.csv")
+    # 거래량 지표 해석
+    result["volume"] = {
+        "obv": latest['obv'],
+        "adl": latest['adl'],
+        "status": "증가" if df['volume'].iloc[-1] > df['volume'].iloc[-2] else "감소"
+    }
+    
+    # 지지선/저항선 추정
+    price_array = df['close'].values
+    resistance_level = max(df['high'].iloc[-10:])
+    support_level = min(df['low'].iloc[-10:])
+    
+    result["levels"] = {
+        "resistance": resistance_level,
+        "support": support_level
+    }
+    
+    # 종합적인 시장 분석
+    bullish_signals = 0
+    bearish_signals = 0
+    
+    # RSI 신호
+    if rsi < 30: bullish_signals += 1
+    elif rsi > 70: bearish_signals += 1
+    
+    # MACD 신호
+    if macd > macd_signal: bullish_signals += 1
+    else: bearish_signals += 1
+    
+    # 볼린저 밴드 신호
+    if bb_pband < 0.2: bullish_signals += 1
+    elif bb_pband > 0.8: bearish_signals += 1
+    
+    # 스토캐스틱 신호
+    if stoch_k < 20 and stoch_d < 20: bullish_signals += 1
+    elif stoch_k > 80 and stoch_d > 80: bearish_signals += 1
+    
+    # 이동평균선 신호
+    if latest['close'] > latest['sma20']: bullish_signals += 1
+    else: bearish_signals += 1
+    
+    # 종합 상태
+    if bullish_signals > bearish_signals + 1:
+        market_status = "강한 매수 신호"
+    elif bearish_signals > bullish_signals + 1:
+        market_status = "강한 매도 신호"
+    elif bullish_signals > bearish_signals:
+        market_status = "약한 매수 신호"
+    elif bearish_signals > bullish_signals:
+        market_status = "약한 매도 신호"
+    else:
+        market_status = "중립"
+    
+    result["overall"] = {
+        "bullish_signals": bullish_signals,
+        "bearish_signals": bearish_signals,
+        "status": market_status
+    }
+    
+    return result
 
-
-# --- TA
-
+def print_technical_analysis(analysis):
+    """
+    분석된 기술적 지표 정보를 출력합니다.
+    """
+    print("\n===== 기술적 분석 지표 =====")
+    
+    # RSI 출력
+    rsi = analysis["rsi"]
+    print(f"RSI(14): {rsi['value']:.2f} - {rsi['status']}")
+    
+    # MACD 출력
+    macd = analysis["macd"]
+    print(f"MACD: {macd['value']:.2f}, Signal: {macd['signal']:.2f}, Diff: {macd['diff']:.2f} - {macd['status']}")
+    
+    # 볼린저 밴드 출력
+    bb = analysis["bollinger"]
+    print(f"볼린저 밴드: 상단={bb['upper']:,.0f}, 중앙={bb['middle']:,.0f}, 하단={bb['lower']:,.0f}")
+    print(f"볼린저 밴드 폭: {bb['width']:.4f}, 위치: {bb['pband']:.2f} - {bb['status']}")
+    
+    # 스토캐스틱 출력
+    stoch = analysis["stochastic"]
+    print(f"스토캐스틱: K={stoch['k']:.2f}, D={stoch['d']:.2f} - {stoch['status']}")
+    
+    # MFI 출력
+    mfi = analysis["mfi"]
+    print(f"MFI: {mfi['value']:.2f} - {mfi['status']}")
+    
+    # 이동평균선 출력
+    ma = analysis["moving_averages"]
+    print(f"이동평균선: SMA(5)={ma['sma5']:,.0f}, SMA(20)={ma['sma20']:,.0f} - {ma['status']}")
+    
+    # 지지선/저항선 출력
+    levels = analysis["levels"]
+    print(f"저항선: {levels['resistance']:,.0f}원, 지지선: {levels['support']:,.0f}원")
+    
+    # 종합 분석 결과 출력
+    overall = analysis["overall"]
+    print(f"\n종합 분석: {overall['status']} (강세 신호: {overall['bullish_signals']}, 약세 신호: {overall['bearish_signals']})")
 
 def ai_trading():
     # 업비트 API 설정
@@ -377,7 +439,7 @@ def ai_trading():
     chart_data = get_chart_data()
     
     # 30일 일봉 데이터 요약 정보 출력
-    daily_df = pd.DataFrame(chart_data["daily"])
+    daily_df = chart_data["daily_df"]
     print("\n===== 30일 일봉 데이터 요약 =====")
     print(f"기간: {daily_df.index[0].strftime('%Y-%m-%d')} ~ {daily_df.index[-1].strftime('%Y-%m-%d')}")
     print(f"시작가: {daily_df['open'].iloc[0]:,.0f}원")
@@ -386,17 +448,25 @@ def ai_trading():
     print(f"30일 최저가: {daily_df['low'].min():,.0f}원")
     print(f"30일 변동률: {((daily_df['close'].iloc[-1] / daily_df['open'].iloc[0]) - 1) * 100:.2f}%")
     
+    # 기술적 분석 지표 분석 및 출력
+    daily_analysis = analyze_technical_indicators(daily_df)
+    hourly_analysis = analyze_technical_indicators(chart_data["hourly_df"])
+    
+    print_technical_analysis(daily_analysis)
+    
     # AI에게 데이터 제공하고 판단 받기
     client = OpenAI()
     
-    # 데이터 준비 (일봉 데이터를 기본으로 사용)
-    df = pyupbit.get_ohlcv("KRW-BTC", count=30, interval="day")
-    
+    # 기술적 분석 지표가 포함된 데이터 준비
     data_for_ai = {
-        "daily_chart": df.to_dict('records'),
+        "daily_chart": chart_data["daily"],
         "hourly_chart": chart_data["hourly"],
         "account_status": account_status,
-        "orderbook": orderbook[0]
+        "orderbook": orderbook[0],
+        "technical_analysis": {
+            "daily": daily_analysis,
+            "hourly": hourly_analysis
+        }
     }
     
     # AI 요청
@@ -408,7 +478,31 @@ def ai_trading():
                 "content": [
                     {
                         "type": "text",
-                        "text": "You are an expert in Bitcoin investing. Tell me whether to buy, sell, or hold at the moment based on the chart data, account status, and orderbook provided. response in json format.\n\nResponse Example : \n{\"decision\":\"buy\", \"reason\":\"some technical reason\", \"confidence_level\": 0.8}\n{\"decision\":\"sell\", \"reason\":\"some technical reason\", \"confidence_level\": 0.7}\n{\"decision\":\"hold\", \"reason\":\"some technical reason\", \"confidence_level\": 0.6}\n"
+                        "text": """You are an expert in Bitcoin investing and technical analysis. Based on the provided data, analyze the current market situation and decide whether to buy, sell, or hold Bitcoin.
+
+Your analysis should consider:
+1. Price trends and chart patterns
+2. Technical indicators like RSI, MACD, Bollinger Bands, Stochastic, and MFI
+3. Current account status and position
+4. Market depth and orderbook data
+5. Volume analysis
+6. Support and resistance levels
+
+Respond in JSON format with the following structure:
+{
+  "decision": "buy|sell|hold",
+  "reason": "detailed technical explanation of your decision",
+  "confidence_level": 0.0-1.0,
+  "key_indicators": {
+    "trend": "bullish|bearish|neutral",
+    "momentum": "strong|weak|neutral",
+    "volatility": "high|normal|low",
+    "support": "price level",
+    "resistance": "price level"
+  },
+  "risk_level": "high|medium|low"
+}
+"""
                     }
                 ]
             },
@@ -435,6 +529,19 @@ def ai_trading():
     print(f"결정: {result['decision'].upper()}")
     print(f"이유: {result['reason']}")
     print(f"신뢰도: {result.get('confidence_level', 0) * 100:.1f}%")
+    
+    # 추가 지표 정보 출력
+    if 'key_indicators' in result:
+        print("\n----- 핵심 지표 분석 -----")
+        indicators = result['key_indicators']
+        print(f"추세: {indicators.get('trend', 'N/A')}")
+        print(f"모멘텀: {indicators.get('momentum', 'N/A')}")
+        print(f"변동성: {indicators.get('volatility', 'N/A')}")
+        print(f"지지선: {indicators.get('support', 'N/A')}원")
+        print(f"저항선: {indicators.get('resistance', 'N/A')}원")
+    
+    if 'risk_level' in result:
+        print(f"\n위험도: {result['risk_level']}")
     
     # 자동매매 실행
     if result["decision"] == "buy":
