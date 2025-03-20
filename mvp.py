@@ -50,7 +50,7 @@ def ai_trading():
     )
     result = response.choices[0].message.content
 
-    # 3. AI의 판단에 따라 실제로 자동매매 진행하기
+    # AI의 판단에 따라 실제로 자동매매 진행하기
 
     import json
 
