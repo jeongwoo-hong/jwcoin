@@ -3,6 +3,7 @@ import json
 import time
 import pandas as pd
 import numpy as np
+import requests
 from dotenv import load_dotenv
 import pyupbit
 from openai import OpenAI
@@ -14,6 +15,105 @@ from ta.volume import OnBalanceVolumeIndicator, AccDistIndexIndicator, MFIIndica
 
 # 환경 변수 로드
 load_dotenv()
+
+def get_fear_greed_index(limit=7):
+    """
+    Fear and Greed Index API에서 공포 탐욕 지수 데이터를 가져옵니다.
+    
+    Parameters:
+    -----------
+    limit : int
+        가져올 데이터의 개수 (기본값: 7일)
+        
+    Returns:
+    --------
+    dict
+        공포 탐욕 지수 데이터
+    """
+    try:
+        url = f"https://api.alternative.me/fng/?limit={limit}"
+        response = requests.get(url)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            print(f"Fear & Greed Index API 오류: {response.status_code}")
+            return None
+    except Exception as e:
+        print(f"Fear & Greed Index API 요청 오류: {e}")
+        return None
+
+def interpret_fear_greed_index(fg_data):
+    """
+    공포 탐욕 지수 데이터를 해석합니다.
+    
+    Parameters:
+    -----------
+    fg_data : dict
+        Fear and Greed Index API에서 가져온 데이터
+        
+    Returns:
+    --------
+    dict
+        해석된 공포 탐욕 지수 정보
+    """
+    if not fg_data or "data" not in fg_data or not fg_data["data"]:
+        return {
+            "current": {
+                "value": 0,
+                "classification": "Unknown",
+                "timestamp": 0,
+                "time_until_update": 0
+            },
+            "trend": "Unknown",
+            "market_sentiment": "Unknown",
+            "analysis": "데이터를 가져올 수 없습니다."
+        }
+    
+    # 현재 값
+    current = fg_data["data"][0]
+    current_value = int(current["value"])
+    
+    # 추세 계산 (최근 7일 또는 가능한 모든 데이터)
+    values = [int(item["value"]) for item in fg_data["data"]]
+    avg_value = sum(values) / len(values)
+    
+    # 추세 판단
+    if current_value > avg_value + 5:
+        trend = "상승"
+    elif current_value < avg_value - 5:
+        trend = "하락"
+    else:
+        trend = "유지"
+    
+    # 시장 심리 해석
+    if current_value <= 25:
+        market_sentiment = "극단적 공포"
+        analysis = "시장에 극단적인 공포가 퍼져있습니다. 일반적으로 매수 기회일 수 있습니다."
+    elif current_value <= 40:
+        market_sentiment = "공포"
+        analysis = "시장에 공포가 있습니다. 가격이 실제 가치보다 낮을 수 있어 매수 신호로 볼 수 있습니다."
+    elif current_value <= 55:
+        market_sentiment = "중립"
+        analysis = "시장이 중립적입니다. 뚜렷한 매수/매도 신호가 없습니다."
+    elif current_value <= 75:
+        market_sentiment = "탐욕"
+        analysis = "시장에 탐욕이 있습니다. 가격이 과대평가되었을 수 있어 주의가 필요합니다."
+    else:
+        market_sentiment = "극단적 탐욕"
+        analysis = "시장에 극단적인 탐욕이 있습니다. 조정이 올 수 있어 매도 신호로 볼 수 있습니다."
+    
+    return {
+        "current": {
+            "value": current_value,
+            "classification": current["value_classification"],
+            "timestamp": int(current["timestamp"]),
+            "time_until_update": int(current.get("time_until_update", 0))
+        },
+        "trend": trend,
+        "market_sentiment": market_sentiment,
+        "analysis": analysis,
+        "historical_values": values
+    }
 
 def get_account_status(upbit):
     """BTC와 KRW에 대한 계정 상태 정보만 가져옵니다."""
@@ -426,6 +526,36 @@ def ai_trading():
     if 'BTC_avg_buy_price' in account_status:
         print(f"BTC 평균 매수가: {account_status['BTC_avg_buy_price']:,.0f}원")
     
+    # 공포 탐욕 지수 가져오기
+    fear_greed_data = get_fear_greed_index(limit=7)
+    fear_greed_analysis = interpret_fear_greed_index(fear_greed_data)
+    
+    print("\n===== 공포 탐욕 지수 =====")
+    current_fg = fear_greed_analysis["current"]
+    print(f"현재 지수: {current_fg['value']} ({current_fg['classification']})")
+    print(f"시장 심리: {fear_greed_analysis['market_sentiment']}")
+    print(f"추세: {fear_greed_analysis['trend']}")
+    print(f"분석: {fear_greed_analysis['analysis']}")
+    
+    # 지수 변화 추이 (작은 차트 형태로 표시)
+    values = fear_greed_analysis.get("historical_values", [])
+    if values:
+        print("\n최근 추이:")
+        # 간단한 ASCII 차트로 표시
+        max_value = max(values)
+        min_value = min(values)
+        range_value = max(max_value - min_value, 1)  # 0으로 나누기 방지
+        chart_width = 20
+        
+        for i, value in enumerate(values):
+            bar_length = int((value - min_value) / range_value * chart_width)
+            bar = "■" * bar_length
+            date_offset = i  # 오늘부터 i일 전
+            if i == 0:
+                print(f"오늘: {value:2d} |{bar}")
+            else:
+                print(f"{date_offset}일 전: {value:2d} |{bar}")
+    
     # 오더북(호가) 데이터 가져오기
     orderbook = get_orderbook_data()
     print("\n===== 오더북 정보 =====")
@@ -466,7 +596,8 @@ def ai_trading():
         "technical_analysis": {
             "daily": daily_analysis,
             "hourly": hourly_analysis
-        }
+        },
+        "fear_greed_index": fear_greed_analysis
     }
     
     # AI 요청
@@ -487,6 +618,7 @@ Your analysis should consider:
 4. Market depth and orderbook data
 5. Volume analysis
 6. Support and resistance levels
+7. Fear and Greed Index (market sentiment)
 
 Respond in JSON format with the following structure:
 {
@@ -500,7 +632,11 @@ Respond in JSON format with the following structure:
     "support": "price level",
     "resistance": "price level"
   },
-  "risk_level": "high|medium|low"
+  "risk_level": "high|medium|low",
+  "market_sentiment": {
+    "fear_greed_assessment": "text assessment of fear and greed index",
+    "sentiment_impact": "positive|negative|neutral"
+  }
 }
 """
                     }
@@ -542,6 +678,17 @@ Respond in JSON format with the following structure:
     
     if 'risk_level' in result:
         print(f"\n위험도: {result['risk_level']}")
+    
+    # 시장 심리 정보 출력
+    if 'market_sentiment' in result:
+        sentiment = result['market_sentiment']
+        print("\n----- 시장 심리 분석 -----")
+        if 'fear_greed_assessment' in sentiment:
+            print(f"공포 탐욕 평가: {sentiment['fear_greed_assessment']}")
+        if 'sentiment_impact' in sentiment:
+            impact = sentiment['sentiment_impact']
+            impact_emoji = "🔴" if impact == "negative" else "🟢" if impact == "positive" else "⚪"
+            print(f"심리 영향: {impact} {impact_emoji}")
     
     # 자동매매 실행
     if result["decision"] == "buy":
