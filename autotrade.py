@@ -18,10 +18,16 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
-from selenium.common.exceptions import TimeoutException, ElementClickInterceptedException, WebDriverException
+from selenium.common.exceptions import TimeoutException, ElementClickInterceptedException, WebDriverException, NoSuchElementException
 import logging
 from datetime import datetime
 from youtube_transcript_api import YouTubeTranscriptApi
+from pydantic import BaseModel
+from openai import OpenAI
+
+class TradingDecision(BaseModel):
+    decision: str
+    reason: str
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -107,6 +113,12 @@ def create_driver():
 def click_element_by_xpath(driver, xpath, element_name, wait_time=10):
     try:
         element = WebDriverWait(driver, wait_time).until(
+            EC.presence_of_element_located((By.XPATH, xpath))
+        )
+        # 요소가 뷰포트에 보일 때까지 스크롤
+        driver.execute_script("arguments[0].scrollIntoView(true);", element)
+        # 요소가 클릭 가능할 때까지 대기
+        element = WebDriverWait(driver, wait_time).until(
             EC.element_to_be_clickable((By.XPATH, xpath))
         )
         element.click()
@@ -116,6 +128,8 @@ def click_element_by_xpath(driver, xpath, element_name, wait_time=10):
         logger.error(f"{element_name} 요소를 찾는 데 시간이 초과되었습니다.")
     except ElementClickInterceptedException:
         logger.error(f"{element_name} 요소를 클릭할 수 없습니다. 다른 요소에 가려져 있을 수 있습니다.")
+    except NoSuchElementException:
+        logger.error(f"{element_name} 요소를 찾을 수 없습니다.")
     except Exception as e:
         logger.error(f"{element_name} 클릭 중 오류 발생: {e}")
 
@@ -251,63 +265,75 @@ def ai_trading():
     client = OpenAI()
 
     response = client.chat.completions.create(
-    model="gpt-4o",
-    messages=[
-        {
-        "role": "system",
-        "content": """You are an expert in Bitcoin investing. Analyze the provided data including technical indicators, market data, recent news headlines, the Fear and Greed Index, YouTube video transcript, and the chart image. Tell me whether to buy, sell, or hold at the moment. Consider the following in your analysis:
-        - Technical indicators and market data
-        - Recent news headlines and their potential impact on Bitcoin price
-        - The Fear and Greed Index and its implications
-        - Overall market sentiment
-        - The patterns and trends visible in the chart image
-        - Insights from the YouTube video transcript
-        
-        Response in json format.
-
-        Response Example:
-        {"decision": "buy", "reason": "some technical, fundamental, and sentiment-based reason"}
-        {"decision": "sell", "reason": "some technical, fundamental, and sentiment-based reason"}
-        {"decision": "hold", "reason": "some technical, fundamental, and sentiment-based reason"}"""
-        },
-        {
-        "role": "user",
-        "content": [
+        model="gpt-4o-2024-08-06",
+        messages=[
             {
-                "type": "text",
-                "text": f"""Current investment status: {json.dumps(filtered_balances)}
-Orderbook: {json.dumps(orderbook)}
-Daily OHLCV with indicators (30 days): {df_daily.to_json()}
-Hourly OHLCV with indicators (24 hours): {df_hourly.to_json()}
-Recent news headlines: {json.dumps(news_headlines)}
-Fear and Greed Index: {json.dumps(fear_greed_index)}
-YouTube Video Transcript: {youtube_transcript}"""
+                "role": "system",
+                "content": """You are an expert in Bitcoin investing. Analyze the provided data including technical indicators, market data, recent news headlines, the Fear and Greed Index, YouTube video transcript, and the chart image. Tell me whether to buy, sell, or hold at the moment. Consider the following in your analysis:
+                - Technical indicators and market data
+                - Recent news headlines and their potential impact on Bitcoin price
+                - The Fear and Greed Index and its implications
+                - Overall market sentiment
+                - The patterns and trends visible in the chart image
+                - Insights from the YouTube video transcript
+                
+                Respond with a decision (buy, sell, or hold) and a reason for your decision."""
             },
             {
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:image/png;base64,{chart_image}"
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"""Current investment status: {json.dumps(filtered_balances)}
+        Orderbook: {json.dumps(orderbook)}
+        Daily OHLCV with indicators (30 days): {df_daily.to_json()}
+        Hourly OHLCV with indicators (24 hours): {df_hourly.to_json()}
+        Recent news headlines: {json.dumps(news_headlines)}
+        Fear and Greed Index: {json.dumps(fear_greed_index)}
+        YouTube Video Transcript: {youtube_transcript}"""
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/png;base64,{chart_image}"
+                        }
+                    }
+                ]
+            }
+        ],
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "trading_decision",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "decision": {"type": "string", "enum": ["buy", "sell", "hold"]},
+                        "reason": {"type": "string"}
+                    },
+                    "required": ["decision", "reason"],
+                    "additionalProperties": False
                 }
             }
-        ]
-        }
-    ],
-    max_tokens=300,
-    response_format={"type": "json_object"}
+        },
+        max_tokens=4095
     )
-    result = json.loads(response.choices[0].message.content)
 
-    print("### AI Decision: ", result["decision"].upper(), "###")
-    print(f"### Reason: {result['reason']} ###")
+    # 최신 pydantic 메서드 사용
+    result = TradingDecision.model_validate_json(response.choices[0].message.content)
 
-    if result["decision"] == "buy":
+    print(f"### AI Decision: {result.decision.upper()} ###")
+    print(f"### Reason: {result.reason} ###")
+
+    if result.decision == "buy":
         my_krw = upbit.get_balance("KRW")
         if my_krw*0.9995 > 5000:
             print("### Buy Order Executed ###")
             print(upbit.buy_market_order("KRW-BTC", my_krw * 0.9995))
         else:
             print("### Buy Order Failed: Insufficient KRW (less than 5000 KRW) ###")
-    elif result["decision"] == "sell":
+    elif result.decision == "sell":
         my_btc = upbit.get_balance("KRW-BTC")
         current_price = pyupbit.get_orderbook(ticker="KRW-BTC")['orderbook_units'][0]["ask_price"]
         if my_btc*current_price > 5000:
@@ -315,7 +341,7 @@ YouTube Video Transcript: {youtube_transcript}"""
             print(upbit.sell_market_order("KRW-BTC", my_btc))
         else:
             print("### Sell Order Failed: Insufficient BTC (less than 5000 KRW worth) ###")
-    elif result["decision"] == "hold":
+    elif result.decision == "hold":
         print("### Hold Position ###")
 
 ai_trading()
