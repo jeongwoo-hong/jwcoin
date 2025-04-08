@@ -21,6 +21,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 from selenium.common.exceptions import TimeoutException, ElementClickInterceptedException, WebDriverException
 import logging
 from datetime import datetime
+from youtube_transcript_api import YouTubeTranscriptApi
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -184,6 +185,15 @@ def capture_and_encode_screenshot(driver):
         logger.error(f"스크린샷 캡처 및 인코딩 중 오류 발생: {e}")
         return None, None
 
+def get_combined_transcript(video_id):
+    try:
+        transcript = YouTubeTranscriptApi.get_transcript(video_id)
+        combined_text = ' '.join(entry['text'] for entry in transcript)
+        return combined_text
+    except Exception as e:
+        logger.error(f"Error fetching YouTube transcript: {e}")
+        return ""
+
 def ai_trading():
     # Upbit 객체 생성
     access = os.getenv("UPBIT_ACCESS_KEY")
@@ -211,6 +221,9 @@ def ai_trading():
 
     # 5. 뉴스 헤드라인 가져오기
     news_headlines = get_bitcoin_news()
+
+    # 6. YouTube 자막 데이터 가져오기
+    youtube_transcript = get_combined_transcript("TWINrTppUl4")  # 여기에 실제 비트코인 관련 YouTube 영상 ID를 넣으세요
 
     # Selenium으로 차트 캡처
     driver = None
@@ -242,12 +255,13 @@ def ai_trading():
     messages=[
         {
         "role": "system",
-        "content": """You are an expert in Bitcoin investing. Analyze the provided data including technical indicators, market data, recent news headlines, the Fear and Greed Index, and the chart image. Tell me whether to buy, sell, or hold at the moment. Consider the following in your analysis:
+        "content": """You are an expert in Bitcoin investing. Analyze the provided data including technical indicators, market data, recent news headlines, the Fear and Greed Index, YouTube video transcript, and the chart image. Tell me whether to buy, sell, or hold at the moment. Consider the following in your analysis:
         - Technical indicators and market data
         - Recent news headlines and their potential impact on Bitcoin price
         - The Fear and Greed Index and its implications
         - Overall market sentiment
         - The patterns and trends visible in the chart image
+        - Insights from the YouTube video transcript
         
         Response in json format.
 
@@ -266,7 +280,8 @@ Orderbook: {json.dumps(orderbook)}
 Daily OHLCV with indicators (30 days): {df_daily.to_json()}
 Hourly OHLCV with indicators (24 hours): {df_hourly.to_json()}
 Recent news headlines: {json.dumps(news_headlines)}
-Fear and Greed Index: {json.dumps(fear_greed_index)}"""
+Fear and Greed Index: {json.dumps(fear_greed_index)}
+YouTube Video Transcript: {youtube_transcript}"""
             },
             {
                 "type": "image_url",
