@@ -6,3 +6,4 @@ selenium
 webdriver-manager
 pillow
 youtube-transcript-api
+streamlit
