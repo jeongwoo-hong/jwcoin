@@ -25,7 +25,7 @@ from youtube_transcript_api import YouTubeTranscriptApi
 from pydantic import BaseModel
 from openai import OpenAI
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 
 class TradingDecision(BaseModel):
     decision: str
@@ -44,18 +44,71 @@ def init_db():
                   btc_balance REAL,
                   krw_balance REAL,
                   btc_avg_buy_price REAL,
-                  btc_krw_price REAL)''')
+                  btc_krw_price REAL,
+                  reflection TEXT)''')
     conn.commit()
     return conn
 
-def log_trade(conn, decision, percentage, reason, btc_balance, krw_balance, btc_avg_buy_price, btc_krw_price):
+def log_trade(conn, decision, percentage, reason, btc_balance, krw_balance, btc_avg_buy_price, btc_krw_price, reflection=''):
     c = conn.cursor()
     timestamp = datetime.now().isoformat()
     c.execute("""INSERT INTO trades 
-                 (timestamp, decision, percentage, reason, btc_balance, krw_balance, btc_avg_buy_price, btc_krw_price) 
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-              (timestamp, decision, percentage, reason, btc_balance, krw_balance, btc_avg_buy_price, btc_krw_price))
+                 (timestamp, decision, percentage, reason, btc_balance, krw_balance, btc_avg_buy_price, btc_krw_price, reflection) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+              (timestamp, decision, percentage, reason, btc_balance, krw_balance, btc_avg_buy_price, btc_krw_price, reflection))
     conn.commit()
+
+def get_recent_trades(conn, days=7):
+    c = conn.cursor()
+    seven_days_ago = (datetime.now() - timedelta(days=days)).isoformat()
+    c.execute("SELECT * FROM trades WHERE timestamp > ? ORDER BY timestamp DESC", (seven_days_ago,))
+    columns = [column[0] for column in c.description]
+    return pd.DataFrame.from_records(data=c.fetchall(), columns=columns)
+
+def calculate_performance(trades_df):
+    if trades_df.empty:
+        return 0
+    
+    initial_balance = trades_df.iloc[-1]['krw_balance'] + trades_df.iloc[-1]['btc_balance'] * trades_df.iloc[-1]['btc_krw_price']
+    final_balance = trades_df.iloc[0]['krw_balance'] + trades_df.iloc[0]['btc_balance'] * trades_df.iloc[0]['btc_krw_price']
+    
+    return (final_balance - initial_balance) / initial_balance * 100
+
+def generate_reflection(trades_df, current_market_data):
+    performance = calculate_performance(trades_df)
+    
+    client = OpenAI()
+    response = client.chat.completions.create(
+        model="gpt-4o-2024-08-06",
+        messages=[
+            {
+                "role": "system",
+                "content": "You are an AI trading assistant tasked with analyzing recent trading performance and current market conditions to generate insights and improvements for future trading decisions."
+            },
+            {
+                "role": "user",
+                "content": f"""
+                Recent trading data:
+                {trades_df.to_json(orient='records')}
+                
+                Current market data:
+                {current_market_data}
+                
+                Overall performance in the last 7 days: {performance:.2f}%
+                
+                Please analyze this data and provide:
+                1. A brief reflection on the recent trading decisions
+                2. Insights on what worked well and what didn't
+                3. Suggestions for improvement in future trading decisions
+                4. Any patterns or trends you notice in the market data
+                
+                Limit your response to 250 words or less.
+                """
+            }
+        ]
+    )
+    
+    return response.choices[0].message.content
 
 def get_db_connection():
     return sqlite3.connect('bitcoin_trades.db')
@@ -298,6 +351,25 @@ def ai_trading():
     # AI에게 데이터 제공하고 판단 받기
     client = OpenAI()
 
+    # 데이터베이스 연결
+    conn = get_db_connection()
+    
+    # 최근 거래 내역 가져오기
+    recent_trades = get_recent_trades(conn)
+    
+    # 현재 시장 데이터 수집 (기존 코드에서 가져온 데이터 사용)
+    current_market_data = {
+        "fear_greed_index": fear_greed_index,
+        "news_headlines": news_headlines,
+        "orderbook": orderbook,
+        "daily_ohlcv": df_daily.to_dict(),
+        "hourly_ohlcv": df_hourly.to_dict()
+    }
+    
+    # 반성 및 개선 내용 생성
+    reflection = generate_reflection(recent_trades, current_market_data)
+    
+    # AI 모델에 반성 내용 제공
     response = client.chat.completions.create(
         model="gpt-4o-2024-08-06",
         messages=[
@@ -310,12 +382,16 @@ def ai_trading():
                 - The Fear and Greed Index and its implications
                 - Overall market sentiment
                 - Patterns and trends visible in the chart image
+                - Recent trading performance and reflection
+
+                Recent trading reflection:
+                {reflection}
 
                 Particularly important is to always refer to the trading method of 'Wonyyotti', a legendary Korean investor, to assess the current situation and make trading decisions. Wonyyotti's trading method is as follows:
 
                 {youtube_transcript}
 
-                Based on this trading method, analyze the current market situation and make a judgment by synthesizing it with the provided data.
+                Based on this trading method, analyze the current market situation and make a judgment by synthesizing it with the provided data and recent performance reflection.
 
                 Response format:
                 1. Decision (buy, sell, or hold)
@@ -371,9 +447,6 @@ def ai_trading():
     # 최신 pydantic 메서드 사용
     result = TradingDecision.model_validate_json(response.choices[0].message.content)
 
-    # 데이터베이스 연결
-    conn = get_db_connection()
-
     print(f"### AI Decision: {result.decision.upper()} ###")
     print(f"### Reason: {result.reason} ###")
 
@@ -411,9 +484,9 @@ def ai_trading():
     btc_avg_buy_price = next((float(balance['avg_buy_price']) for balance in balances if balance['currency'] == 'BTC'), 0)
     current_btc_price = pyupbit.get_current_price("KRW-BTC")
 
-    # 거래 정보 로깅
+    # 거래 정보 및 반성 내용 로깅
     log_trade(conn, result.decision, result.percentage if order_executed else 0, result.reason, 
-              btc_balance, krw_balance, btc_avg_buy_price, current_btc_price)
+              btc_balance, krw_balance, btc_avg_buy_price, current_btc_price, reflection)
 
     # 데이터베이스 연결 종료
     conn.close()
