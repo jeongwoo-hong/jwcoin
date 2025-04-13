@@ -8,3 +8,4 @@ pillow
 youtube-transcript-api
 streamlit
 plotly
+schedule
