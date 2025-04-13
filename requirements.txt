@@ -7,3 +7,4 @@ webdriver-manager
 pillow
 youtube-transcript-api
 streamlit
+plotly
