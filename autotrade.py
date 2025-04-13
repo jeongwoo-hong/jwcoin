@@ -24,11 +24,44 @@ from datetime import datetime
 from youtube_transcript_api import YouTubeTranscriptApi
 from pydantic import BaseModel
 from openai import OpenAI
+import sqlite3
+from datetime import datetime
 
 class TradingDecision(BaseModel):
     decision: str
     percentage: int
     reason: str
+
+def init_db():
+    conn = sqlite3.connect('bitcoin_trades.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS trades
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  timestamp TEXT,
+                  decision TEXT,
+                  percentage INTEGER,
+                  reason TEXT,
+                  btc_balance REAL,
+                  krw_balance REAL,
+                  btc_avg_buy_price REAL,
+                  btc_krw_price REAL)''')
+    conn.commit()
+    return conn
+
+def log_trade(conn, decision, percentage, reason, btc_balance, krw_balance, btc_avg_buy_price, btc_krw_price):
+    c = conn.cursor()
+    timestamp = datetime.now().isoformat()
+    c.execute("""INSERT INTO trades 
+                 (timestamp, decision, percentage, reason, btc_balance, krw_balance, btc_avg_buy_price, btc_krw_price) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+              (timestamp, decision, percentage, reason, btc_balance, krw_balance, btc_avg_buy_price, btc_krw_price))
+    conn.commit()
+
+def get_db_connection():
+    return sqlite3.connect('bitcoin_trades.db')
+
+# 데이터베이스 초기화
+init_db()
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -338,36 +371,58 @@ def ai_trading():
     # 최신 pydantic 메서드 사용
     result = TradingDecision.model_validate_json(response.choices[0].message.content)
 
+    # 데이터베이스 연결
+    conn = get_db_connection()
+
     print(f"### AI Decision: {result.decision.upper()} ###")
     print(f"### Reason: {result.reason} ###")
+
+    order_executed = False
 
     if result.decision == "buy":
         my_krw = upbit.get_balance("KRW")
         buy_amount = my_krw * (result.percentage / 100) * 0.9995  # 수수료 고려
         if buy_amount > 5000:
             print(f"### Buy Order Executed: {result.percentage}% of available KRW ###")
-            print(upbit.buy_market_order("KRW-BTC", buy_amount))
+            order = upbit.buy_market_order("KRW-BTC", buy_amount)
+            if order:
+                order_executed = True
+            print(order)
         else:
             print("### Buy Order Failed: Insufficient KRW (less than 5000 KRW) ###")
     elif result.decision == "sell":
         my_btc = upbit.get_balance("KRW-BTC")
         sell_amount = my_btc * (result.percentage / 100)
-        current_price = pyupbit.get_orderbook(ticker="KRW-BTC")['orderbook_units'][0]["ask_price"]
+        current_price = pyupbit.get_current_price("KRW-BTC")
         if sell_amount * current_price > 5000:
             print(f"### Sell Order Executed: {result.percentage}% of held BTC ###")
-            print(upbit.sell_market_order("KRW-BTC", sell_amount))
+            order = upbit.sell_market_order("KRW-BTC", sell_amount)
+            if order:
+                order_executed = True
+            print(order)
         else:
             print("### Sell Order Failed: Insufficient BTC (less than 5000 KRW worth) ###")
-    elif result.decision == "hold":
-        print("### Hold Position ###")
 
-ai_trading()
+    # 거래 실행 여부와 관계없이 현재 잔고 조회
+    time.sleep(1)  # API 호출 제한을 고려하여 잠시 대기
+    balances = upbit.get_balances()
+    btc_balance = next((float(balance['balance']) for balance in balances if balance['currency'] == 'BTC'), 0)
+    krw_balance = next((float(balance['balance']) for balance in balances if balance['currency'] == 'KRW'), 0)
+    btc_avg_buy_price = next((float(balance['avg_buy_price']) for balance in balances if balance['currency'] == 'BTC'), 0)
+    current_btc_price = pyupbit.get_current_price("KRW-BTC")
 
-# # Main loop
-# while True:
-#     try:
-#         ai_trading()
-#         time.sleep(3600 * 4)  # 4시간마다 실행
-#     except Exception as e:
-#         logger.error(f"An error occurred: {e}")
-#         time.sleep(300)  # 오류 발생 시 5분 후 재시도
+    # 거래 정보 로깅
+    log_trade(conn, result.decision, result.percentage if order_executed else 0, result.reason, 
+              btc_balance, krw_balance, btc_avg_buy_price, current_btc_price)
+
+    # 데이터베이스 연결 종료
+    conn.close()
+
+# Main loop
+while True:
+    try:
+        ai_trading()
+        time.sleep(3600 * 4)  # 4시간마다 실행
+    except Exception as e:
+        logger.error(f"An error occurred: {e}")
+        time.sleep(300)  # 오류 발생 시 5분 후 재시도
