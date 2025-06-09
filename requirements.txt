@@ -9,3 +9,4 @@ youtube-transcript-api
 streamlit
 plotly
 schedule
+googletrans==4.0.0-rc1
