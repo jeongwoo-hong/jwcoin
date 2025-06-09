@@ -32,16 +32,44 @@ def calculate_portfolio_value(df):
     df_sorted['total_value'] = df_sorted['btc_balance'] * df_sorted['btc_krw_price'] + df_sorted['krw_balance']
     return df_sorted
 
-# 수익률 계산 함수
+# 수익률 계산 함수 (매수 금액 기준)
 def calculate_returns(df):
     df_sorted = df.sort_values('timestamp')
-    if len(df_sorted) > 1:
-        initial_value = df_sorted.iloc[0]['total_value']
-        df_sorted['return_pct'] = ((df_sorted['total_value'] - initial_value) / initial_value) * 100
-        df_sorted['daily_return'] = df_sorted['total_value'].pct_change() * 100
+    
+    # 매수 거래만 필터링하여 총 투자 금액 계산
+    buy_trades = df_sorted[df_sorted['decision'] == 'buy'].copy()
+    
+    if len(buy_trades) > 0:
+        # 각 매수 거래의 투자 금액 계산 (이전 잔액에서 현재 잔액을 뺀 값)
+        total_invested = 0
+        
+        for i, trade in buy_trades.iterrows():
+            # 매수한 BTC 수량을 추정 (이전 거래와 비교)
+            prev_trades = df_sorted[df_sorted['timestamp'] < trade['timestamp']]
+            if len(prev_trades) > 0:
+                prev_btc = prev_trades.iloc[-1]['btc_balance']
+                btc_bought = trade['btc_balance'] - prev_btc
+                invested_amount = btc_bought * trade['btc_krw_price']
+                total_invested += invested_amount
+            else:
+                # 첫 거래인 경우
+                invested_amount = trade['btc_balance'] * trade['btc_krw_price']
+                total_invested += invested_amount
+        
+        # 매수 금액 대비 수익률 계산
+        if total_invested > 0:
+            df_sorted['invested_amount'] = total_invested
+            df_sorted['investment_return'] = ((df_sorted['total_value'] - total_invested) / total_invested) * 100
+        else:
+            df_sorted['invested_amount'] = 0
+            df_sorted['investment_return'] = 0
     else:
-        df_sorted['return_pct'] = 0
-        df_sorted['daily_return'] = 0
+        df_sorted['invested_amount'] = 0
+        df_sorted['investment_return'] = 0
+    
+    # 일별 수익률 (전날 대비)
+    df_sorted['daily_return'] = df_sorted['total_value'].pct_change() * 100
+    
     return df_sorted
 
 # 메인 함수
@@ -59,6 +87,9 @@ def main():
     # 포트폴리오 가치 및 수익률 계산
     df_with_portfolio = calculate_portfolio_value(df)
     df_with_returns = calculate_returns(df_with_portfolio)
+    
+    # 계산된 데이터프레임을 사용
+    df = df_with_returns
 
     # 📊 핵심 지표 (KPI)
     st.header('📈 핵심 투자 지표')
@@ -73,9 +104,12 @@ def main():
         st.metric("현재 포트폴리오 가치", f"{current_value:,.0f} KRW")
     
     with col2:
-        total_return = latest_trade['return_pct'] if latest_trade is not None else 0
-        st.metric("총 수익률", f"{total_return:.2f}%", 
+        total_return = latest_trade['investment_return'] if latest_trade is not None else 0
+        invested_amount = latest_trade['invested_amount'] if latest_trade is not None else 0
+        st.metric("매수 대비 수익률", f"{total_return:.2f}%", 
                  delta=f"{total_return:.2f}%" if total_return != 0 else None)
+        if invested_amount > 0:
+            st.caption(f"총 투자금액: {invested_amount:,.0f} KRW")
     
     with col3:
         total_trades = len(df)
@@ -102,7 +136,7 @@ def main():
 
     # 🔥 포트폴리오 가치 변화 (메인 차트)
     st.header('💰 포트폴리오 가치 변화')
-    fig_portfolio = px.line(df_with_returns.sort_values('timestamp'), 
+    fig_portfolio = px.line(df.sort_values('timestamp'), 
                            x='timestamp', y='total_value',
                            title='포트폴리오 총 가치 변화',
                            labels={'total_value': '포트폴리오 가치 (KRW)', 'timestamp': '시간'})
@@ -116,18 +150,18 @@ def main():
     col1, col2 = st.columns(2)
     
     with col1:
-        # 누적 수익률
-        fig_return = px.line(df_with_returns.sort_values('timestamp'), 
-                            x='timestamp', y='return_pct',
-                            title='누적 수익률 (%)',
-                            labels={'return_pct': '수익률 (%)', 'timestamp': '시간'})
+        # 누적 수익률 (매수 금액 기준)
+        fig_return = px.line(df.sort_values('timestamp'), 
+                            x='timestamp', y='investment_return',
+                            title='매수 대비 누적 수익률 (%)',
+                            labels={'investment_return': '수익률 (%)', 'timestamp': '시간'})
         fig_return.update_traces(line=dict(width=2, color='#2ca02c'))
         fig_return.add_hline(y=0, line_dash="dash", line_color="red", opacity=0.7)
         st.plotly_chart(fig_return, use_container_width=True)
     
     with col2:
         # 일별 수익률 히스토그램
-        daily_returns = df_with_returns['daily_return'].dropna()
+        daily_returns = df['daily_return'].dropna()
         if len(daily_returns) > 1:
             fig_hist = px.histogram(x=daily_returns, nbins=20,
                                   title='일별 수익률 분포',
@@ -162,21 +196,21 @@ def main():
     # 📈 통합 차트 (BTC 가격 + 거래 포인트)
     st.header('📈 BTC 가격 & 거래 포인트')
     
-    df_sorted = df.sort_values('timestamp')
+    df_chart = df.sort_values('timestamp')
     
     fig_combined = go.Figure()
     
     # BTC 가격 라인
     fig_combined.add_trace(go.Scatter(
-        x=df_sorted['timestamp'], 
-        y=df_sorted['btc_krw_price'],
+        x=df_chart['timestamp'], 
+        y=df_chart['btc_krw_price'],
         mode='lines',
         name='BTC 가격',
         line=dict(color='orange', width=2)
     ))
     
     # 매수 포인트
-    buy_trades = df_sorted[df_sorted['decision'] == 'buy']
+    buy_trades = df_chart[df_chart['decision'] == 'buy']
     if len(buy_trades) > 0:
         fig_combined.add_trace(go.Scatter(
             x=buy_trades['timestamp'],
@@ -187,7 +221,7 @@ def main():
         ))
     
     # 매도 포인트
-    sell_trades = df_sorted[df_sorted['decision'] == 'sell']
+    sell_trades = df_chart[df_chart['decision'] == 'sell']
     if len(sell_trades) > 0:
         fig_combined.add_trace(go.Scatter(
             x=sell_trades['timestamp'],
@@ -210,6 +244,9 @@ def main():
     st.header('💎 자산 구성 변화')
     
     # BTC vs KRW 비율 차트
+    df_sorted = df.sort_values('timestamp')
+    
+    # 이미 계산된 total_value를 사용
     df_sorted['btc_value'] = df_sorted['btc_balance'] * df_sorted['btc_krw_price']
     df_sorted['btc_ratio'] = (df_sorted['btc_value'] / df_sorted['total_value']) * 100
     df_sorted['krw_ratio'] = (df_sorted['krw_balance'] / df_sorted['total_value']) * 100
