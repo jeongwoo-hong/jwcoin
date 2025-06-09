@@ -24,12 +24,14 @@ def format_metric_text(value, max_length=12):
     if pd.isna(value):
         return "0"
     
-    text = str(value)
-    if len(text) <= max_length:
-        return text
-    
     try:
         num = float(value)
+        
+        # 작은 소수의 경우 (BTC 등)
+        if 0 < abs(num) < 1:
+            return f"{num:.6f}"
+        
+        # 큰 숫자의 경우 단위 변환
         if abs(num) >= 1_000_000_000:
             return f"{num/1_000_000_000:.1f}B"
         elif abs(num) >= 1_000_000:
@@ -37,8 +39,15 @@ def format_metric_text(value, max_length=12):
         elif abs(num) >= 1_000:
             return f"{num/1_000:.1f}K"
         else:
-            return f"{num:.1f}"
-    except:
+            # 일반 숫자의 경우
+            if abs(num) >= 100:
+                return f"{num:,.0f}"
+            else:
+                return f"{num:.2f}"
+                
+    except (ValueError, TypeError):
+        # 문자열인 경우 줄임
+        text = str(value)
         return text[:max_length-3] + "..." if len(text) > max_length else text
 
 def translate_reason(reason):
@@ -391,7 +400,8 @@ def main():
     
     with col2:
         rate = latest['return_rate']
-        st.metric("수익률(수수료반영)", f"{format_metric_text(rate):.2f}%",
+        formatted_rate = format_metric_text(rate)
+        st.metric("수익률(수수료반영)", f"{formatted_rate}%",
                  delta=f"{rate:.2f}%" if rate != 0 else None)
     
     with col3:
@@ -409,7 +419,8 @@ def main():
     
     with col6:
         btc = latest['btc_balance']
-        st.metric("보유 BTC", f"{format_metric_text(btc):.6f} BTC")
+        formatted_btc = format_metric_text(btc)
+        st.metric("보유 BTC", f"{formatted_btc} BTC")
 
     st.markdown("---")
 
