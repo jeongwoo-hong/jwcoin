@@ -2,27 +2,13 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 import plotly.express as px
-from googletrans import Translator
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import numpy as np
 
 # 데이터베이스 연결 함수
 def get_connection():
     return sqlite3.connect('bitcoin_trades.db')
-
-# Google Translate를 사용한 번역 함수
-@st.cache_data
-def translate_reason(reason):
-    if pd.isna(reason) or reason == '' or str(reason).strip() == '':
-        return reason
-    
-    try:
-        translator = Translator()
-        # 영어를 한국어로 번역
-        translated = translator.translate(str(reason), src='en', dest='ko')
-        return translated.text
-    except Exception as e:
-        # 번역 실패 시 원본 반환
-        st.warning(f"Translation failed for '{reason}': {str(e)}")
-        return reason
 
 # 데이터 로드 함수
 def load_data():
@@ -31,73 +17,267 @@ def load_data():
     df = pd.read_sql_query(query, conn)
     conn.close()
     
+    # 거래 이유를 한국어로 번역
+    if 'reason' in df.columns:
+        df['reason_kr'] = df['reason']
+    
+    # 타임스탬프를 datetime으로 변환
+    df['timestamp'] = pd.to_datetime(df['timestamp'])
+    
     return df
+
+# 포트폴리오 가치 계산 함수
+def calculate_portfolio_value(df):
+    df_sorted = df.sort_values('timestamp')
+    df_sorted['total_value'] = df_sorted['btc_balance'] * df_sorted['btc_krw_price'] + df_sorted['krw_balance']
+    return df_sorted
+
+# 수익률 계산 함수
+def calculate_returns(df):
+    df_sorted = df.sort_values('timestamp')
+    if len(df_sorted) > 1:
+        initial_value = df_sorted.iloc[0]['total_value']
+        df_sorted['return_pct'] = ((df_sorted['total_value'] - initial_value) / initial_value) * 100
+        df_sorted['daily_return'] = df_sorted['total_value'].pct_change() * 100
+    else:
+        df_sorted['return_pct'] = 0
+        df_sorted['daily_return'] = 0
+    return df_sorted
 
 # 메인 함수
 def main():
-    st.title('Bitcoin Trades Viewer')
+    st.title('🚀 Bitcoin Trading Dashboard')
+    st.markdown("---")
 
     # 데이터 로드
     df = load_data()
-
-    # 기본 통계
-    st.header('Basic Statistics')
-    st.write(f"Total number of trades: {len(df)}")
-    st.write(f"First trade date: {df['timestamp'].min()}")
-    st.write(f"Last trade date: {df['timestamp'].max()}")
-
-    # 거래 내역 표시 (최신순)
-    st.header('Trade History (Latest First)')
     
-    # 번역 진행 상황 표시
-    if 'reason' in df.columns and len(df) > 0:
-        with st.spinner('거래 이유를 번역하는 중...'):
-            # 거래 이유를 한국어로 번역 (캐시 사용으로 중복 번역 방지)
-            df['reason_kr'] = df['reason'].apply(translate_reason)
+    if len(df) == 0:
+        st.warning("거래 데이터가 없습니다.")
+        return
+
+    # 포트폴리오 가치 및 수익률 계산
+    df_with_portfolio = calculate_portfolio_value(df)
+    df_with_returns = calculate_returns(df_with_portfolio)
+
+    # 📊 핵심 지표 (KPI)
+    st.header('📈 핵심 투자 지표')
     
-    # 표시할 컬럼 선택
+    col1, col2, col3, col4 = st.columns(4)
+    
+    latest_trade = df_with_returns.iloc[-1] if len(df_with_returns) > 0 else None
+    first_trade = df_with_returns.iloc[0] if len(df_with_returns) > 0 else None
+    
+    with col1:
+        current_value = latest_trade['total_value'] if latest_trade is not None else 0
+        st.metric("현재 포트폴리오 가치", f"{current_value:,.0f} KRW")
+    
+    with col2:
+        total_return = latest_trade['return_pct'] if latest_trade is not None else 0
+        st.metric("총 수익률", f"{total_return:.2f}%", 
+                 delta=f"{total_return:.2f}%" if total_return != 0 else None)
+    
+    with col3:
+        total_trades = len(df)
+        buy_trades = len(df[df['decision'] == 'buy'])
+        st.metric("총 거래 횟수", f"{total_trades}회", 
+                 delta=f"매수: {buy_trades}회")
+    
+    with col4:
+        current_btc = latest_trade['btc_balance'] if latest_trade is not None else 0
+        st.metric("보유 BTC", f"{current_btc:.6f} BTC")
+
+    st.markdown("---")
+
+    # 기본 통계 (간소화)
+    st.header('📋 Basic Statistics')
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.write(f"**첫 거래일**: {df['timestamp'].min().strftime('%Y-%m-%d')}")
+    with col2:
+        st.write(f"**최근 거래일**: {df['timestamp'].max().strftime('%Y-%m-%d')}")
+    with col3:
+        trading_days = (df['timestamp'].max() - df['timestamp'].min()).days
+        st.write(f"**거래 기간**: {trading_days}일")
+
+    # 🔥 포트폴리오 가치 변화 (메인 차트)
+    st.header('💰 포트폴리오 가치 변화')
+    fig_portfolio = px.line(df_with_returns.sort_values('timestamp'), 
+                           x='timestamp', y='total_value',
+                           title='포트폴리오 총 가치 변화',
+                           labels={'total_value': '포트폴리오 가치 (KRW)', 'timestamp': '시간'})
+    fig_portfolio.update_traces(line=dict(width=3, color='#1f77b4'))
+    fig_portfolio.update_layout(height=400)
+    st.plotly_chart(fig_portfolio, use_container_width=True)
+
+    # 📊 수익률 차트
+    st.header('📊 수익률 분석')
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # 누적 수익률
+        fig_return = px.line(df_with_returns.sort_values('timestamp'), 
+                            x='timestamp', y='return_pct',
+                            title='누적 수익률 (%)',
+                            labels={'return_pct': '수익률 (%)', 'timestamp': '시간'})
+        fig_return.update_traces(line=dict(width=2, color='#2ca02c'))
+        fig_return.add_hline(y=0, line_dash="dash", line_color="red", opacity=0.7)
+        st.plotly_chart(fig_return, use_container_width=True)
+    
+    with col2:
+        # 일별 수익률 히스토그램
+        daily_returns = df_with_returns['daily_return'].dropna()
+        if len(daily_returns) > 1:
+            fig_hist = px.histogram(x=daily_returns, nbins=20,
+                                  title='일별 수익률 분포',
+                                  labels={'x': '일별 수익률 (%)', 'count': '빈도'})
+            fig_hist.add_vline(x=daily_returns.mean(), line_dash="dash", 
+                              line_color="red", annotation_text=f"평균: {daily_returns.mean():.2f}%")
+            st.plotly_chart(fig_hist, use_container_width=True)
+
+    # 🎯 거래 패턴 분석
+    st.header('🎯 거래 패턴 분석')
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # 거래 결정 분포 (도넛 차트)
+        decision_counts = df['decision'].value_counts()
+        fig_decision = px.pie(values=decision_counts.values, names=decision_counts.index, 
+                             title='거래 결정 분포', hole=0.4)
+        fig_decision.update_traces(textposition='inside', textinfo='percent+label')
+        st.plotly_chart(fig_decision, use_container_width=True)
+    
+    with col2:
+        # 월별 거래 횟수
+        df['month'] = df['timestamp'].dt.to_period('M').astype(str)
+        monthly_trades = df.groupby('month').size().reset_index(name='trades')
+        fig_monthly = px.bar(monthly_trades, x='month', y='trades',
+                            title='월별 거래 횟수',
+                            labels={'month': '월', 'trades': '거래 횟수'})
+        fig_monthly.update_traces(marker_color='lightblue')
+        st.plotly_chart(fig_monthly, use_container_width=True)
+
+    # 📈 통합 차트 (BTC 가격 + 거래 포인트)
+    st.header('📈 BTC 가격 & 거래 포인트')
+    
+    df_sorted = df.sort_values('timestamp')
+    
+    fig_combined = go.Figure()
+    
+    # BTC 가격 라인
+    fig_combined.add_trace(go.Scatter(
+        x=df_sorted['timestamp'], 
+        y=df_sorted['btc_krw_price'],
+        mode='lines',
+        name='BTC 가격',
+        line=dict(color='orange', width=2)
+    ))
+    
+    # 매수 포인트
+    buy_trades = df_sorted[df_sorted['decision'] == 'buy']
+    if len(buy_trades) > 0:
+        fig_combined.add_trace(go.Scatter(
+            x=buy_trades['timestamp'],
+            y=buy_trades['btc_krw_price'],
+            mode='markers',
+            name='매수',
+            marker=dict(color='green', size=10, symbol='triangle-up')
+        ))
+    
+    # 매도 포인트
+    sell_trades = df_sorted[df_sorted['decision'] == 'sell']
+    if len(sell_trades) > 0:
+        fig_combined.add_trace(go.Scatter(
+            x=sell_trades['timestamp'],
+            y=sell_trades['btc_krw_price'],
+            mode='markers',
+            name='매도',
+            marker=dict(color='red', size=10, symbol='triangle-down')
+        ))
+    
+    fig_combined.update_layout(
+        title='BTC 가격 변화 및 거래 포인트',
+        xaxis_title='시간',
+        yaxis_title='BTC 가격 (KRW)',
+        height=500
+    )
+    
+    st.plotly_chart(fig_combined, use_container_width=True)
+
+    # 💎 자산 구성 변화
+    st.header('💎 자산 구성 변화')
+    
+    # BTC vs KRW 비율 차트
+    df_sorted['btc_value'] = df_sorted['btc_balance'] * df_sorted['btc_krw_price']
+    df_sorted['btc_ratio'] = (df_sorted['btc_value'] / df_sorted['total_value']) * 100
+    df_sorted['krw_ratio'] = (df_sorted['krw_balance'] / df_sorted['total_value']) * 100
+    
+    fig_composition = go.Figure()
+    
+    fig_composition.add_trace(go.Scatter(
+        x=df_sorted['timestamp'], 
+        y=df_sorted['btc_ratio'],
+        fill='tonexty',
+        mode='lines',
+        name='BTC 비율 (%)',
+        line=dict(color='orange')
+    ))
+    
+    fig_composition.add_trace(go.Scatter(
+        x=df_sorted['timestamp'], 
+        y=df_sorted['krw_ratio'],
+        fill='tozeroy',
+        mode='lines',
+        name='KRW 비율 (%)',
+        line=dict(color='blue')
+    ))
+    
+    fig_composition.update_layout(
+        title='자산 구성 비율 변화',
+        xaxis_title='시간',
+        yaxis_title='비율 (%)',
+        yaxis=dict(range=[0, 100]),
+        height=400
+    )
+    
+    st.plotly_chart(fig_composition, use_container_width=True)
+
+    # 거래 내역 표시
+    st.header('📜 거래 내역 (최신순)')
     display_columns = ['timestamp', 'decision', 'btc_krw_price', 'btc_balance', 'krw_balance']
     
-    # 컬럼이 존재하는지 확인하고 표시
     available_columns = [col for col in display_columns if col in df.columns]
     if 'reason_kr' in df.columns:
         available_columns.append('reason_kr')
     elif 'reason' in df.columns:
         available_columns.append('reason')
     
-    st.dataframe(df[available_columns])
-
-    # 거래 결정 분포
-    st.header('Trade Decision Distribution')
-    decision_counts = df['decision'].value_counts()
-    fig = px.pie(values=decision_counts.values, names=decision_counts.index, title='거래 결정 분포')
-    st.plotly_chart(fig)
-
-    # BTC 잔액 변화 (시간순으로 정렬하여 차트 표시)
-    st.header('BTC Balance Over Time')
-    df_sorted = df.sort_values('timestamp')  # 차트용으로는 시간순 정렬
-    fig = px.line(df_sorted, x='timestamp', y='btc_balance', title='BTC Balance')
-    st.plotly_chart(fig)
-
-    # KRW 잔액 변화
-    st.header('KRW Balance Over Time')
-    fig = px.line(df_sorted, x='timestamp', y='krw_balance', title='KRW Balance')
-    st.plotly_chart(fig)
-
-    # BTC 가격 변화
-    st.header('BTC Price Over Time')
-    fig = px.line(df_sorted, x='timestamp', y='btc_krw_price', title='BTC Price (KRW)')
-    st.plotly_chart(fig)
+    # 데이터프레임 스타일링
+    styled_df = df[available_columns].head(20)  # 최근 20개만 표시
+    st.dataframe(styled_df, use_container_width=True)
 
     # 최근 거래 요약
-    st.header('Recent Trade Summary')
+    st.header('🎯 최근 거래 요약')
     if len(df) > 0:
         latest_trade = df.iloc[0]
-        st.write(f"**최근 거래 결정**: {latest_trade['decision']}")
-        st.write(f"**거래 시간**: {latest_trade['timestamp']}")
-        st.write(f"**BTC 가격**: {latest_trade['btc_krw_price']:,.0f} KRW")
-        st.write(f"**현재 BTC 잔액**: {latest_trade['btc_balance']:.6f} BTC")
-        st.write(f"**현재 KRW 잔액**: {latest_trade['krw_balance']:,.0f} KRW")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.info(f"""
+            **최근 거래 결정**: {latest_trade['decision']}  
+            **거래 시간**: {latest_trade['timestamp']}  
+            **BTC 가격**: {latest_trade['btc_krw_price']:,.0f} KRW  
+            """)
+        
+        with col2:
+            st.success(f"""
+            **현재 BTC 잔액**: {latest_trade['btc_balance']:.6f} BTC  
+            **현재 KRW 잔액**: {latest_trade['krw_balance']:,.0f} KRW  
+            **포트폴리오 가치**: {current_value:,.0f} KRW  
+            """)
         
         if 'reason_kr' in df.columns and pd.notna(latest_trade['reason_kr']):
             st.write(f"**거래 이유**: {latest_trade['reason_kr']}")
