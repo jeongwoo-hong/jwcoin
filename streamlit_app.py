@@ -3,8 +3,13 @@ import sqlite3
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import numpy as np
+
+# ============================================================================
+# 설정 및 상수
+# ============================================================================
+
+UPBIT_FEE_RATE = 0.0005  # 업비트 수수료율 0.05%
 
 # ============================================================================
 # 유틸리티 함수들
@@ -16,6 +21,9 @@ def get_connection():
 
 def format_metric_text(value, max_length=12):
     """메트릭 텍스트의 길이를 자동으로 조절"""
+    if pd.isna(value):
+        return "0"
+    
     text = str(value)
     if len(text) <= max_length:
         return text
@@ -33,11 +41,36 @@ def format_metric_text(value, max_length=12):
     except:
         return text[:max_length-3] + "..." if len(text) > max_length else text
 
+def translate_reason(reason):
+    """거래 이유 한국어 번역"""
+    if pd.isna(reason) or reason == '':
+        return reason
+    
+    translations = {
+        'RSI oversold': 'RSI 과매도',
+        'RSI overbought': 'RSI 과매수', 
+        'MACD bullish crossover': 'MACD 상승 교차',
+        'MACD bearish crossover': 'MACD 하락 교차',
+        'Breaking resistance': '저항선 돌파',
+        'Breaking support': '지지선 이탈',
+        'Risk management': '리스크 관리',
+        'Profit taking': '수익 실현',
+        'Stop loss': '손절매',
+        'Technical analysis': '기술적 분석',
+        'Market sentiment': '시장 심리'
+    }
+    
+    for eng, kor in translations.items():
+        if eng.lower() in str(reason).lower():
+            return str(reason).replace(eng, kor)
+    
+    return reason
 
 # ============================================================================
-# 데이터 처리 함수들
+# 데이터 로드 및 기본 처리
 # ============================================================================
 
+@st.cache_data
 def load_data():
     """데이터베이스에서 거래 데이터 로드"""
     conn = get_connection()
@@ -53,113 +86,106 @@ def load_data():
     
     # 거래 이유 한국어 번역
     if 'reason' in df.columns:
-        df['reason_kr'] = df['reason']
+        df['reason_kr'] = df['reason'].apply(translate_reason)
     
     return df
 
-def calculate_portfolio_value(df):
-    """포트폴리오 가치 계산"""
-    df['btc_value'] = df['btc_balance'] * df['btc_krw_price']
-    df['total_value'] = df['btc_value'] + df['krw_balance']
-    return df
+# ============================================================================
+# 투자 성과 계산
+# ============================================================================
 
-def calculate_accurate_trades(df):
-    """BTC 잔액 변화를 통한 정확한 매수/매도 금액 계산"""
-    df = df.copy()
+def calculate_trading_amounts(df):
+    """BTC 잔액 변화를 통한 매수/매도 금액 및 수수료 계산"""
+    df = df.copy().reset_index(drop=True)
+    
+    # 초기화
     df['buy_amount'] = 0.0
     df['sell_amount'] = 0.0
     df['btc_traded'] = 0.0
+    df['trading_fee'] = 0.0
     
     for i in range(len(df)):
-        current_row = df.iloc[i]
-        
         if i == 0:
-            # 첫 거래 - 전체 BTC를 매수한 것으로 가정
-            if current_row['btc_balance'] > 0:
-                df.loc[i, 'buy_amount'] = current_row['btc_balance'] * current_row['btc_krw_price']
-                df.loc[i, 'btc_traded'] = current_row['btc_balance']
+            # 첫 거래 - 초기 BTC 보유량을 매수한 것으로 가정
+            if df.loc[i, 'btc_balance'] > 0:
+                buy_amount = df.loc[i, 'btc_balance'] * df.loc[i, 'btc_krw_price']
+                df.loc[i, 'buy_amount'] = buy_amount
+                df.loc[i, 'trading_fee'] = buy_amount * UPBIT_FEE_RATE
+                df.loc[i, 'btc_traded'] = df.loc[i, 'btc_balance']
         else:
-            prev_row = df.iloc[i-1]
-            btc_diff = current_row['btc_balance'] - prev_row['btc_balance']
+            # BTC 잔액 변화로 거래량 계산
+            btc_diff = df.loc[i, 'btc_balance'] - df.loc[i-1, 'btc_balance']
             
-            if btc_diff > 0:  # BTC 증가 = 매수
-                df.loc[i, 'buy_amount'] = btc_diff * current_row['btc_krw_price']
+            if btc_diff > 0:  # 매수
+                buy_amount = btc_diff * df.loc[i, 'btc_krw_price']
+                df.loc[i, 'buy_amount'] = buy_amount
+                df.loc[i, 'trading_fee'] = buy_amount * UPBIT_FEE_RATE
                 df.loc[i, 'btc_traded'] = btc_diff
-            elif btc_diff < 0:  # BTC 감소 = 매도
-                df.loc[i, 'sell_amount'] = abs(btc_diff) * current_row['btc_krw_price']
+                
+            elif btc_diff < 0:  # 매도
+                sell_amount = abs(btc_diff) * df.loc[i, 'btc_krw_price']
+                df.loc[i, 'sell_amount'] = sell_amount
+                df.loc[i, 'trading_fee'] = sell_amount * UPBIT_FEE_RATE
                 df.loc[i, 'btc_traded'] = btc_diff
     
     return df
 
-def calculate_investment_performance(df):
-    """정확한 투자 성과 계산 (btc_avg_buy_price 활용)"""
-    df = df.sort_values('timestamp').reset_index(drop=True)
-    df = calculate_accurate_trades(df)
+def calculate_performance_metrics(df):
+    """수수료를 반영한 투자 성과 계산"""
+    df = df.copy()
     
-    # 누적 계산
-    cumulative_buy_amount = 0
-    cumulative_sell_amount = 0
-    cumulative_buy_btc = 0
-    cumulative_sell_btc = 0
+    # 누적 값들 초기화
+    df['cumulative_buy_amount'] = df['buy_amount'].cumsum()
+    df['cumulative_sell_amount'] = df['sell_amount'].cumsum()
+    df['cumulative_fees'] = df['trading_fee'].cumsum()
     
+    # 포트폴리오 가치
+    df['btc_value'] = df['btc_balance'] * df['btc_krw_price']
+    df['total_value'] = df['btc_value'] + df['krw_balance']
+    
+    # 각 시점별 성과 계산
     for i in range(len(df)):
-        row = df.iloc[i]
+        # 투자원금 (매수금액 - 매도금액 + 수수료)
+        net_investment = df.loc[i, 'cumulative_buy_amount'] - df.loc[i, 'cumulative_sell_amount'] + df.loc[i, 'cumulative_fees']
+        df.loc[i, 'net_investment'] = max(net_investment, 0.01)  # 0으로 나누기 방지
         
-        # 누적 매수/매도 금액 및 수량
-        cumulative_buy_amount += row['buy_amount']
-        cumulative_sell_amount += row['sell_amount']
+        # 순투자금액 (수수료 제외)
+        pure_investment = df.loc[i, 'cumulative_buy_amount'] - df.loc[i, 'cumulative_sell_amount']
+        df.loc[i, 'pure_investment'] = max(pure_investment, 0.01)
         
-        if row['buy_amount'] > 0:
-            cumulative_buy_btc += row['btc_traded']
-        elif row['sell_amount'] > 0:
-            cumulative_sell_btc += abs(row['btc_traded'])
-        
-        # 현재 자산 상태
-        current_btc_value = row['btc_balance'] * row['btc_krw_price']
-        current_krw = row['krw_balance']
-        total_asset = current_btc_value + current_krw
-        
-        # 실현손익 계산 (DB의 btc_avg_buy_price 활용)
-        if cumulative_sell_btc > 0 and row['btc_avg_buy_price'] > 0:
-            # 매도한 BTC의 평균 매수가 기준 실현손익
-            cost_of_sold_btc = cumulative_sell_btc * row['btc_avg_buy_price']
-            realized_profit = cumulative_sell_amount - cost_of_sold_btc
+        # 실현손익 (매도를 통한 확정 손익)
+        if df.loc[i, 'cumulative_sell_amount'] > 0 and df.loc[i, 'btc_avg_buy_price'] > 0:
+            sell_btc_amount = df.loc[i, 'cumulative_sell_amount'] / df.loc[i, 'btc_krw_price']
+            cost_of_sold_btc = sell_btc_amount * df.loc[i, 'btc_avg_buy_price']
+            realized_profit = df.loc[i, 'cumulative_sell_amount'] - cost_of_sold_btc
         else:
             realized_profit = 0
+        df.loc[i, 'realized_profit'] = realized_profit
         
-        # 평가손익 계산 (현재 보유 BTC 기준)
-        if row['btc_balance'] > 0 and row['btc_avg_buy_price'] > 0:
-            cost_of_held_btc = row['btc_balance'] * row['btc_avg_buy_price']
-            unrealized_profit = current_btc_value - cost_of_held_btc
+        # 평가손익 (현재 보유 BTC의 미실현 손익)
+        if df.loc[i, 'btc_balance'] > 0 and df.loc[i, 'btc_avg_buy_price'] > 0:
+            cost_of_held_btc = df.loc[i, 'btc_balance'] * df.loc[i, 'btc_avg_buy_price']
+            unrealized_profit = df.loc[i, 'btc_value'] - cost_of_held_btc
         else:
             unrealized_profit = 0
+        df.loc[i, 'unrealized_profit'] = unrealized_profit
         
-        # 총 손익
-        total_profit = realized_profit + unrealized_profit
+        # 총 손익 (수수료 반영 전후)
+        total_profit_before_fees = realized_profit + unrealized_profit
+        total_profit_after_fees = total_profit_before_fees - df.loc[i, 'cumulative_fees']
         
-        # 투자원금 계산 (순 투입 금액)
-        net_investment = cumulative_buy_amount - cumulative_sell_amount
+        df.loc[i, 'total_profit_before_fees'] = total_profit_before_fees
+        df.loc[i, 'total_profit_after_fees'] = total_profit_after_fees
         
         # 수익률 계산
-        if net_investment > 0:
-            return_rate = (total_profit / net_investment) * 100
-        else:
-            return_rate = 0
+        return_rate = (total_profit_after_fees / df.loc[i, 'net_investment']) * 100
+        return_rate_excluding_fees = (total_profit_before_fees / df.loc[i, 'pure_investment']) * 100
         
-        # 결과 저장
-        df.loc[i, 'cumulative_buy_amount'] = cumulative_buy_amount
-        df.loc[i, 'cumulative_sell_amount'] = cumulative_sell_amount
-        df.loc[i, 'cumulative_buy_btc'] = cumulative_buy_btc
-        df.loc[i, 'cumulative_sell_btc'] = cumulative_sell_btc
-        df.loc[i, 'net_investment'] = net_investment
-        df.loc[i, 'realized_profit'] = realized_profit
-        df.loc[i, 'unrealized_profit'] = unrealized_profit
-        df.loc[i, 'total_profit'] = total_profit
         df.loc[i, 'return_rate'] = return_rate
-        df.loc[i, 'total_asset'] = total_asset
+        df.loc[i, 'return_rate_excluding_fees'] = return_rate_excluding_fees
     
     # 일별 수익률
-    df['daily_return'] = df['total_asset'].pct_change() * 100
+    df['daily_return'] = df['total_value'].pct_change() * 100
     
     return df
 
@@ -169,24 +195,69 @@ def calculate_investment_performance(df):
 
 def create_portfolio_chart(df):
     """포트폴리오 가치 변화 차트"""
-    fig = px.line(df, x='timestamp', y='total_asset',
+    fig = px.line(df, x='timestamp', y='total_value',
                   title='포트폴리오 총 가치 변화',
-                  labels={'total_asset': '포트폴리오 가치 (KRW)', 'timestamp': '시간'})
+                  labels={'total_value': '포트폴리오 가치 (KRW)', 'timestamp': '시간'})
     fig.update_traces(line=dict(width=3, color='#1f77b4'))
     fig.update_layout(height=400)
     return fig
 
-def create_return_chart(df):
-    """수익률 변화 차트"""
-    fig = px.line(df, x='timestamp', y='return_rate',
-                  title='총 수익률 변화 (%)',
-                  labels={'return_rate': '수익률 (%)', 'timestamp': '시간'})
-    fig.update_traces(line=dict(width=2, color='#2ca02c'))
+def create_return_comparison_chart(df):
+    """수수료 반영 전후 수익률 비교"""
+    fig = go.Figure()
+    
+    fig.add_trace(go.Scatter(
+        x=df['timestamp'], 
+        y=df['return_rate'],
+        mode='lines',
+        name='실제 수익률 (수수료 반영)',
+        line=dict(color='blue', width=2)
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=df['timestamp'], 
+        y=df['return_rate_excluding_fees'],
+        mode='lines',
+        name='수수료 제외 수익률',
+        line=dict(color='green', width=2, dash='dash')
+    ))
+    
     fig.add_hline(y=0, line_dash="dash", line_color="red", opacity=0.7)
+    
+    fig.update_layout(
+        title='수익률 비교: 수수료 반영 전후',
+        xaxis_title='시간',
+        yaxis_title='수익률 (%)',
+        height=400
+    )
+    
+    return fig
+
+def create_fee_analysis_chart(df):
+    """수수료 분석 차트"""
+    fig = go.Figure()
+    
+    # 누적 수수료
+    fig.add_trace(go.Scatter(
+        x=df['timestamp'], 
+        y=df['cumulative_fees'],
+        mode='lines',
+        name='누적 수수료',
+        line=dict(color='red', width=2),
+        fill='tozeroy'
+    ))
+    
+    fig.update_layout(
+        title='누적 거래 수수료',
+        xaxis_title='시간',
+        yaxis_title='누적 수수료 (KRW)',
+        height=400
+    )
+    
     return fig
 
 def create_profit_breakdown_chart(df):
-    """실현/평가손익 분석 차트"""
+    """손익 분해 차트"""
     fig = go.Figure()
     
     fig.add_trace(go.Scatter(
@@ -194,8 +265,7 @@ def create_profit_breakdown_chart(df):
         y=df['realized_profit'],
         mode='lines',
         name='실현손익',
-        line=dict(color='green', width=2),
-        fill='tonexty'
+        line=dict(color='green', width=2)
     ))
     
     fig.add_trace(go.Scatter(
@@ -208,14 +278,14 @@ def create_profit_breakdown_chart(df):
     
     fig.add_trace(go.Scatter(
         x=df['timestamp'], 
-        y=df['total_profit'],
+        y=df['total_profit_after_fees'],
         mode='lines',
-        name='총손익',
+        name='총손익(수수료반영)',
         line=dict(color='blue', width=3)
     ))
     
     fig.update_layout(
-        title='손익 구성 변화',
+        title='손익 구성 분석',
         xaxis_title='시간',
         yaxis_title='손익 (KRW)',
         height=400
@@ -223,8 +293,8 @@ def create_profit_breakdown_chart(df):
     
     return fig
 
-def create_avg_buy_price_chart(df):
-    """평균 매수가 vs 현재가 비교 차트"""
+def create_price_analysis_chart(df):
+    """BTC 가격 분석 차트"""
     fig = go.Figure()
     
     # 현재 BTC 가격
@@ -246,22 +316,22 @@ def create_avg_buy_price_chart(df):
     ))
     
     # 매수 포인트
-    buy_trades = df[df['buy_amount'] > 0]
-    if len(buy_trades) > 0:
+    buy_data = df[df['buy_amount'] > 0]
+    if len(buy_data) > 0:
         fig.add_trace(go.Scatter(
-            x=buy_trades['timestamp'],
-            y=buy_trades['btc_krw_price'],
+            x=buy_data['timestamp'],
+            y=buy_data['btc_krw_price'],
             mode='markers',
             name='매수',
             marker=dict(color='green', size=8, symbol='triangle-up')
         ))
     
     # 매도 포인트
-    sell_trades = df[df['sell_amount'] > 0]
-    if len(sell_trades) > 0:
+    sell_data = df[df['sell_amount'] > 0]
+    if len(sell_data) > 0:
         fig.add_trace(go.Scatter(
-            x=sell_trades['timestamp'],
-            y=sell_trades['btc_krw_price'],
+            x=sell_data['timestamp'],
+            y=sell_data['btc_krw_price'],
             mode='markers',
             name='매도',
             marker=dict(color='red', size=8, symbol='triangle-down')
@@ -277,56 +347,11 @@ def create_avg_buy_price_chart(df):
     return fig
 
 def create_decision_pie_chart(df):
-    """거래 결정 분포 파이 차트"""
+    """거래 결정 분포"""
     decision_counts = df['decision'].value_counts()
     fig = px.pie(values=decision_counts.values, names=decision_counts.index, 
                  title='거래 결정 분포', hole=0.4)
     fig.update_traces(textposition='inside', textinfo='percent+label')
-    return fig
-
-def create_monthly_trades_chart(df):
-    """월별 거래 횟수 차트"""
-    df['month'] = df['timestamp'].dt.to_period('M').astype(str)
-    monthly_trades = df.groupby('month').size().reset_index(name='trades')
-    fig = px.bar(monthly_trades, x='month', y='trades',
-                title='월별 거래 횟수',
-                labels={'month': '월', 'trades': '거래 횟수'})
-    fig.update_traces(marker_color='lightblue')
-    return fig
-
-def create_asset_composition_chart(df):
-    """자산 구성 비율 변화 차트"""
-    df['btc_ratio'] = (df['btc_value'] / df['total_asset']) * 100
-    df['krw_ratio'] = (df['krw_balance'] / df['total_asset']) * 100
-    
-    fig = go.Figure()
-    
-    fig.add_trace(go.Scatter(
-        x=df['timestamp'], 
-        y=df['btc_ratio'],
-        fill='tonexty',
-        mode='lines',
-        name='BTC 비율 (%)',
-        line=dict(color='orange')
-    ))
-    
-    fig.add_trace(go.Scatter(
-        x=df['timestamp'], 
-        y=df['krw_ratio'],
-        fill='tozeroy',
-        mode='lines',
-        name='KRW 비율 (%)',
-        line=dict(color='blue')
-    ))
-    
-    fig.update_layout(
-        title='자산 구성 비율 변화',
-        xaxis_title='시간',
-        yaxis_title='비율 (%)',
-        yaxis=dict(range=[0, 100]),
-        height=400
-    )
-    
     return fig
 
 # ============================================================================
@@ -338,7 +363,7 @@ def main():
     st.title('🚀 Bitcoin Trading Dashboard')
     st.markdown("---")
 
-    # 1. 데이터 로드 및 처리
+    # 데이터 로드
     df = load_data()
     
     if len(df) == 0:
@@ -346,123 +371,139 @@ def main():
         return
 
     # 데이터 처리
-    df = calculate_portfolio_value(df)
-    df = calculate_investment_performance(df)
+    df = calculate_trading_amounts(df)
+    df = calculate_performance_metrics(df)
     
-    latest_trade = df.iloc[-1]  # 최신 거래
+    if len(df) == 0:
+        st.error("데이터 처리 중 오류가 발생했습니다.")
+        return
     
-    # 2. 핵심 지표 (KPI)
+    latest = df.iloc[-1]  # 최신 데이터
+
+    # 핵심 지표
     st.header('📈 핵심 투자 지표')
     
-    col1, col2, col3, col4, col5 = st.columns(5)
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
     
     with col1:
-        current_value = latest_trade['total_asset']
-        formatted_value = format_metric_text(f"{current_value:,.0f}")
-        st.metric("포트폴리오 가치", f"{formatted_value} KRW")
+        value = latest['total_value']
+        st.metric("포트폴리오 가치", f"{format_metric_text(value)} KRW")
     
     with col2:
-        total_return = latest_trade['return_rate']
-        formatted_return = format_metric_text(f"{total_return:.2f}")
-        color = "normal" if total_return >= 0 else "inverse"
-        st.metric("총 수익률", f"{formatted_return}%", 
-                 delta=f"{total_return:.2f}%" if total_return != 0 else None)
+        rate = latest['return_rate']
+        st.metric("수익률(수수료반영)", f"{format_metric_text(rate):.2f}%",
+                 delta=f"{rate:.2f}%" if rate != 0 else None)
     
     with col3:
-        total_profit = latest_trade['total_profit']
-        formatted_profit = format_metric_text(f"{total_profit:,.0f}")
-        st.metric("총 손익", f"{formatted_profit} KRW",
-                 delta=f"{total_profit:,.0f} KRW" if total_profit != 0 else None)
+        profit = latest['total_profit_after_fees']
+        st.metric("순손익", f"{format_metric_text(profit)} KRW",
+                 delta=f"{profit:,.0f} KRW" if profit != 0 else None)
     
     with col4:
-        net_investment = latest_trade['net_investment']
-        formatted_investment = format_metric_text(f"{net_investment:,.0f}")
-        st.metric("순투자금액", f"{formatted_investment} KRW")
+        fees = latest['cumulative_fees']
+        st.metric("누적 수수료", f"{format_metric_text(fees)} KRW")
     
     with col5:
-        current_btc = latest_trade['btc_balance']
-        formatted_btc = format_metric_text(f"{current_btc:.6f}")
-        st.metric("보유 BTC", f"{formatted_btc} BTC")
+        investment = latest['net_investment']
+        st.metric("투자원금", f"{format_metric_text(investment)} KRW")
+    
+    with col6:
+        btc = latest['btc_balance']
+        st.metric("보유 BTC", f"{format_metric_text(btc):.6f} BTC")
 
     st.markdown("---")
 
-    # 3. 기본 통계
+    # 기본 정보
     st.header('📋 거래 기간 정보')
     col1, col2, col3, col4 = st.columns(4)
+    
     with col1:
         st.write(f"**첫 거래일**: {df['timestamp'].min().strftime('%Y-%m-%d')}")
     with col2:
         st.write(f"**최근 거래일**: {df['timestamp'].max().strftime('%Y-%m-%d')}")
     with col3:
-        trading_days = (df['timestamp'].max() - df['timestamp'].min()).days
-        st.write(f"**거래 기간**: {trading_days}일")
+        days = (df['timestamp'].max() - df['timestamp'].min()).days
+        st.write(f"**거래 기간**: {days}일")
     with col4:
-        current_avg_price = latest_trade['btc_avg_buy_price']
-        st.write(f"**평균 매수가**: {current_avg_price:,.0f} KRW")
+        avg_price = latest['btc_avg_buy_price']
+        st.write(f"**평균 매수가**: {avg_price:,.0f} KRW")
 
-    # 4. 포트폴리오 가치 차트
+    # 포트폴리오 가치 차트
     st.header('💰 포트폴리오 가치 변화')
     fig_portfolio = create_portfolio_chart(df)
     st.plotly_chart(fig_portfolio, use_container_width=True)
 
-    # 5. 수익률 및 손익 분석
-    st.header('📊 수익률 & 손익 분석')
+    # 수익률 및 수수료 분석
+    st.header('📊 수익률 & 수수료 분석')
     
     col1, col2 = st.columns(2)
     
     with col1:
-        fig_return = create_return_chart(df)
+        fig_return = create_return_comparison_chart(df)
         st.plotly_chart(fig_return, use_container_width=True)
     
     with col2:
+        fig_fee = create_fee_analysis_chart(df)
+        st.plotly_chart(fig_fee, use_container_width=True)
+
+    # 손익 상세 분석
+    st.header('💰 손익 상세 분석')
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
         fig_profit = create_profit_breakdown_chart(df)
         st.plotly_chart(fig_profit, use_container_width=True)
+    
+    with col2:
+        fig_decision = create_decision_pie_chart(df)
+        st.plotly_chart(fig_decision, use_container_width=True)
 
-    # 6. 상세 투자 성과
+    # 상세 투자 성과
     st.header('💹 상세 투자 성과')
     
     col1, col2, col3 = st.columns(3)
     
     with col1:
         st.subheader("📈 매수/매도 현황")
-        total_buy = latest_trade['cumulative_buy_amount']
-        total_sell = latest_trade['cumulative_sell_amount']
+        buy_total = latest['cumulative_buy_amount']
+        sell_total = latest['cumulative_sell_amount']
         
-        st.metric("총 매수금액", f"{format_metric_text(total_buy)} KRW")
-        st.metric("총 매도금액", f"{format_metric_text(total_sell)} KRW")
-        st.metric("순투자금액", f"{format_metric_text(total_buy - total_sell)} KRW")
+        st.metric("총 매수금액", f"{format_metric_text(buy_total)} KRW")
+        st.metric("총 매도금액", f"{format_metric_text(sell_total)} KRW")
+        st.metric("순거래금액", f"{format_metric_text(buy_total - sell_total)} KRW")
     
     with col2:
-        st.subheader("💰 손익 분석")
-        realized = latest_trade['realized_profit']
-        unrealized = latest_trade['unrealized_profit']
-        total = latest_trade['total_profit']
+        st.subheader("💸 수수료 분석")
+        total_fees = latest['cumulative_fees']
+        pure_inv = latest['pure_investment']
+        fee_rate = (total_fees / pure_inv * 100) if pure_inv > 0 else 0
         
-        st.metric("실현손익", f"{format_metric_text(realized)} KRW",
-                 delta="확정됨" if realized != 0 else None)
-        st.metric("평가손익", f"{format_metric_text(unrealized)} KRW",
-                 delta="미실현" if unrealized != 0 else None)
-        st.metric("총 손익", f"{format_metric_text(total)} KRW")
+        st.metric("총 수수료", f"{format_metric_text(total_fees)} KRW")
+        st.metric("수수료율", f"{fee_rate:.3f}%")
+        
+        trade_count = len(df[df['trading_fee'] > 0])
+        avg_fee = total_fees / trade_count if trade_count > 0 else 0
+        st.metric("거래당 평균수수료", f"{format_metric_text(avg_fee)} KRW")
     
     with col3:
-        st.subheader("📊 거래 통계")
-        total_trades = len(df)
-        buy_trades = len(df[df['buy_amount'] > 0])
-        sell_trades = len(df[df['sell_amount'] > 0])
+        st.subheader("💰 손익 비교")
+        profit_before = latest['total_profit_before_fees']
+        profit_after = latest['total_profit_after_fees']
         
-        st.metric("총 거래횟수", f"{total_trades}회")
-        st.metric("매수 거래", f"{buy_trades}회")
-        st.metric("매도 거래", f"{sell_trades}회")
+        st.metric("수수료 제외 손익", f"{format_metric_text(profit_before)} KRW")
+        st.metric("수수료 반영 손익", f"{format_metric_text(profit_after)} KRW")
+        st.metric("수수료 영향", f"-{format_metric_text(total_fees)} KRW")
 
-    # 7. BTC 가격 분석
-    st.header('📈 BTC 가격 & 평균 매수가 분석')
-    fig_price_analysis = create_avg_buy_price_chart(df)
-    st.plotly_chart(fig_price_analysis, use_container_width=True)
+    # BTC 가격 분석
+    st.header('📈 BTC 가격 분석')
+    fig_price = create_price_analysis_chart(df)
+    st.plotly_chart(fig_price, use_container_width=True)
     
-    # 현재 손익 상황 표시
-    current_price = latest_trade['btc_krw_price']
-    avg_buy_price = latest_trade['btc_avg_buy_price']
-    price_diff_pct = ((current_price - avg_buy_price) / avg_buy_price * 100) if avg_buy_price > 0 else 0
+    # 현재 가격 vs 평균 매수가
+    current_price = latest['btc_krw_price']
+    avg_buy_price = latest['btc_avg_buy_price']
+    price_diff = ((current_price - avg_buy_price) / avg_buy_price * 100) if avg_buy_price > 0 else 0
     
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -470,76 +511,59 @@ def main():
     with col2:
         st.metric("평균 매수가", f"{avg_buy_price:,.0f} KRW")
     with col3:
-        st.metric("가격 차이", f"{price_diff_pct:.2f}%", 
+        st.metric("가격 차이", f"{price_diff:.2f}%", 
                  delta=f"{current_price - avg_buy_price:,.0f} KRW")
 
-    # 8. 거래 패턴 분석
-    st.header('🎯 거래 패턴 분석')
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        fig_decision = create_decision_pie_chart(df)
-        st.plotly_chart(fig_decision, use_container_width=True)
-    
-    with col2:
-        fig_monthly = create_monthly_trades_chart(df)
-        st.plotly_chart(fig_monthly, use_container_width=True)
-
-    # 9. 자산 구성 변화
-    st.header('💎 자산 구성 변화')
-    fig_composition = create_asset_composition_chart(df)
-    st.plotly_chart(fig_composition, use_container_width=True)
-
-    # 10. 거래 내역 (최신순)
+    # 거래 내역
     st.header('📜 거래 내역 (최신순)')
-    display_columns = ['timestamp', 'decision', 'btc_krw_price', 'btc_avg_buy_price', 
-                      'btc_balance', 'krw_balance', 'return_rate']
     
-    available_columns = [col for col in display_columns if col in df.columns]
+    display_cols = ['timestamp', 'decision', 'btc_krw_price', 'btc_avg_buy_price', 
+                   'btc_balance', 'krw_balance', 'trading_fee', 'return_rate']
+    
+    available_cols = [col for col in display_cols if col in df.columns]
     if 'reason_kr' in df.columns:
-        available_columns.append('reason_kr')
+        available_cols.append('reason_kr')
     elif 'reason' in df.columns:
-        available_columns.append('reason')
+        available_cols.append('reason')
     
-    # 최신순으로 정렬하여 표시
-    df_display = df.sort_values('timestamp', ascending=False)
-    styled_df = df_display[available_columns].head(20)
+    df_display = df.sort_values('timestamp', ascending=False)[available_cols].head(20)
     
-    # 수익률 컬럼 포맷팅
-    if 'return_rate' in styled_df.columns:
-        styled_df = styled_df.copy()
-        styled_df['return_rate'] = styled_df['return_rate'].apply(lambda x: f"{x:.2f}%")
+    # 포맷팅
+    if 'return_rate' in df_display.columns:
+        df_display = df_display.copy()
+        df_display['return_rate'] = df_display['return_rate'].apply(lambda x: f"{x:.2f}%")
+    if 'trading_fee' in df_display.columns:
+        df_display['trading_fee'] = df_display['trading_fee'].apply(lambda x: f"{x:,.0f}")
     
-    st.dataframe(styled_df, use_container_width=True)
+    st.dataframe(df_display, use_container_width=True)
 
-    # 11. 실시간 성과 요약
+    # 실시간 성과 요약
     st.header('🎯 실시간 성과 요약')
     
     col1, col2 = st.columns(2)
     
     with col1:
         st.info(f"""
-        **최근 거래 결정**: {latest_trade['decision']}  
-        **거래 시간**: {latest_trade['timestamp']}  
-        **BTC 가격**: {latest_trade['btc_krw_price']:,.0f} KRW  
-        **수익률**: {latest_trade['return_rate']:.2f}%  
-        **평균 매수가**: {latest_trade['btc_avg_buy_price']:,.0f} KRW  
+        **최근 거래 결정**: {latest['decision']}  
+        **거래 시간**: {latest['timestamp']}  
+        **BTC 가격**: {latest['btc_krw_price']:,.0f} KRW  
+        **수익률(수수료반영)**: {latest['return_rate']:.2f}%  
+        **수익률(수수료제외)**: {latest['return_rate_excluding_fees']:.2f}%  
         """)
     
     with col2:
         st.success(f"""
-        **현재 BTC 잔액**: {latest_trade['btc_balance']:.6f} BTC  
-        **현재 KRW 잔액**: {latest_trade['krw_balance']:,.0f} KRW  
-        **포트폴리오 가치**: {latest_trade['total_asset']:,.0f} KRW  
-        **총 손익**: {latest_trade['total_profit']:,.0f} KRW  
-        **순투자금액**: {latest_trade['net_investment']:,.0f} KRW  
+        **현재 BTC 잔액**: {latest['btc_balance']:.6f} BTC  
+        **현재 KRW 잔액**: {latest['krw_balance']:,.0f} KRW  
+        **포트폴리오 가치**: {latest['total_value']:,.0f} KRW  
+        **순손익(수수료반영)**: {latest['total_profit_after_fees']:,.0f} KRW  
+        **총 거래수수료**: {latest['cumulative_fees']:,.0f} KRW  
         """)
     
-    if 'reason_kr' in df.columns and pd.notna(latest_trade['reason_kr']):
-        st.write(f"**거래 이유**: {latest_trade['reason_kr']}")
-    elif 'reason' in df.columns and pd.notna(latest_trade['reason']):
-        st.write(f"**거래 이유**: {latest_trade['reason']}")
+    if 'reason_kr' in df.columns and pd.notna(latest['reason_kr']):
+        st.write(f"**거래 이유**: {latest['reason_kr']}")
+    elif 'reason' in df.columns and pd.notna(latest['reason']):
+        st.write(f"**거래 이유**: {latest['reason']}")
 
 if __name__ == "__main__":
     main()
