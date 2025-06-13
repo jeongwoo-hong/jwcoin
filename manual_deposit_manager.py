@@ -3,7 +3,7 @@ import pandas as pd
 from datetime import datetime
 
 def add_manual_deposit(amount, date_str=None, description="수동 추가"):
-    """수동으로 입금 내역 추가"""
+    """수동으로 입금 내역 추가 (안전한 기본값 사용)"""
     
     try:
         conn = sqlite3.connect('bitcoin_trades.db')
@@ -30,48 +30,100 @@ def add_manual_deposit(amount, date_str=None, description="수동 추가"):
         
         # 컬럼명 가져오기
         cursor.execute("PRAGMA table_info(trades)")
-        columns = [col[1] for col in cursor.fetchall()]
+        columns_info = cursor.fetchall()
+        columns = [col[1] for col in columns_info]
         
-        print(f"\n📋 사용 가능한 컬럼들: {columns}")
+        print(f"\n📋 테이블 컬럼들: {columns}")
         
-        # 새 레코드 생성 (기존 데이터 복사 + KRW만 증가)
-        new_record = list(latest_trade)
+        # 안전한 기본값으로 새 레코드 생성
+        new_values = {}
         
-        # ID 제거 (자동 생성)
-        new_record[0] = None
+        for i, col_name in enumerate(columns):
+            if col_name == 'id':
+                # ID는 자동 증가이므로 None
+                new_values[col_name] = None
+                
+            elif col_name == 'timestamp':
+                # 입력된 시간 또는 현재 시간
+                new_values[col_name] = timestamp
+                
+            elif col_name == 'decision':
+                # 입금은 보유 상태로
+                new_values[col_name] = 'hold'
+                
+            elif col_name == 'percentage':
+                # 거래 비율은 0 (입금이므로 거래 아님)
+                new_values[col_name] = 0
+                
+            elif col_name == 'reason':
+                # 입금 이유
+                new_values[col_name] = f'Manual deposit: {description}'
+                
+            elif col_name == 'btc_balance':
+                # BTC 잔액은 그대로 유지
+                new_values[col_name] = latest_trade[i]
+                
+            elif col_name == 'krw_balance':
+                # KRW 잔액은 입금액만큼 증가
+                new_values[col_name] = latest_trade[i] + amount
+                
+            elif col_name == 'btc_avg_buy_price':
+                # 평균 매수가는 그대로 유지
+                new_values[col_name] = latest_trade[i]
+                
+            elif col_name == 'btc_krw_price':
+                # 현재 BTC 가격은 그대로 유지
+                new_values[col_name] = latest_trade[i]
+                
+            elif col_name == 'reflection':
+                # 거래 후 분석은 입금 관련 메모
+                new_values[col_name] = f'Manual deposit of {amount:,} KRW added'
+                
+            else:
+                # 기타 컬럼들은 이전 값 그대로 또는 적절한 기본값
+                if latest_trade[i] is not None:
+                    new_values[col_name] = latest_trade[i]
+                else:
+                    # 컬럼 타입에 따른 기본값
+                    col_type = columns_info[i][2].upper()
+                    if 'INTEGER' in col_type:
+                        new_values[col_name] = 0
+                    elif 'REAL' in col_type or 'FLOAT' in col_type:
+                        new_values[col_name] = 0.0
+                    elif 'TEXT' in col_type or 'VARCHAR' in col_type:
+                        new_values[col_name] = ''
+                    else:
+                        new_values[col_name] = None
         
-        # 컬럼 인덱스 찾기
-        timestamp_idx = columns.index('timestamp')
-        btc_balance_idx = columns.index('btc_balance')
-        krw_balance_idx = columns.index('krw_balance')
-        decision_idx = columns.index('decision')
-        reason_idx = columns.index('reason')
+        # INSERT 쿼리 생성 및 실행
+        columns_str = ', '.join(columns)
+        placeholders = ', '.join(['?' for _ in columns])
+        values_list = [new_values[col] for col in columns]
         
-        # 새 값 설정
-        new_record[timestamp_idx] = timestamp
-        new_record[krw_balance_idx] = latest_trade[krw_balance_idx] + amount  # KRW 증가
-        new_record[decision_idx] = 'hold'  # 입금은 보유로 설정
-        new_record[reason_idx] = f'Manual deposit: {description}'
+        query = f"INSERT INTO trades ({columns_str}) VALUES ({placeholders})"
         
-        # INSERT 쿼리 생성
-        placeholders = ', '.join(['?' for _ in range(len(columns))])
-        query = f"INSERT INTO trades ({', '.join(columns)}) VALUES ({placeholders})"
+        print(f"\n🔧 실행할 쿼리: {query}")
+        print(f"📊 삽입할 값들:")
+        for col, val in new_values.items():
+            print(f"   {col}: {val}")
         
-        # 실행
-        cursor.execute(query, new_record)
+        cursor.execute(query, values_list)
         conn.commit()
         
-        print(f"✅ 입금 내역이 성공적으로 추가되었습니다!")
-        print(f"   이전 KRW 잔액: {latest_trade[krw_balance_idx]:,}원")
-        print(f"   새로운 KRW 잔액: {new_record[krw_balance_idx]:,}원")
+        print(f"\n✅ 입금 내역이 성공적으로 추가되었습니다!")
+        print(f"   이전 KRW 잔액: {latest_trade[columns.index('krw_balance')]:,}원")
+        print(f"   새로운 KRW 잔액: {new_values['krw_balance']:,}원")
+        print(f"   증가액: +{amount:,}원")
         
         conn.close()
         
     except Exception as e:
         print(f"❌ 오류 발생: {e}")
+        import traceback
+        traceback.print_exc()
 
 def add_manual_withdraw(amount, date_str=None, description="수동 추가"):
-    """수동으로 출금 내역 추가"""
+    """수동으로 출금 내역 추가 (안전한 기본값 사용)"""
     
     try:
         conn = sqlite3.connect('bitcoin_trades.db')
@@ -95,43 +147,79 @@ def add_manual_withdraw(amount, date_str=None, description="수동 추가"):
             return
         
         cursor.execute("PRAGMA table_info(trades)")
-        columns = [col[1] for col in cursor.fetchall()]
+        columns_info = cursor.fetchall()
+        columns = [col[1] for col in columns_info]
         
-        new_record = list(latest_trade)
-        new_record[0] = None  # ID 제거
-        
-        timestamp_idx = columns.index('timestamp')
+        # 출금 전 잔액 확인
         krw_balance_idx = columns.index('krw_balance')
-        decision_idx = columns.index('decision')
-        reason_idx = columns.index('reason')
+        current_krw = latest_trade[krw_balance_idx]
         
-        # 출금 검증
-        if latest_trade[krw_balance_idx] < amount:
-            print(f"⚠️  경고: 현재 KRW 잔액({latest_trade[krw_balance_idx]:,}원)보다 출금액이 큽니다.")
-            confirm = input("계속 진행하시겠습니까? (y/n): ")
-            if confirm.lower() != 'y':
+        if current_krw < amount:
+            print(f"⚠️  경고: 현재 KRW 잔액({current_krw:,}원)보다 출금액이 큽니다.")
+            confirm = input("계속 진행하시겠습니까? (y/n): ").strip().lower()
+            if confirm != 'y':
                 print("❌ 출금 추가가 취소되었습니다.")
                 return
         
-        new_record[timestamp_idx] = timestamp
-        new_record[krw_balance_idx] = latest_trade[krw_balance_idx] - amount  # KRW 감소
-        new_record[decision_idx] = 'hold'
-        new_record[reason_idx] = f'Manual withdraw: {description}'
+        # 안전한 기본값으로 새 레코드 생성
+        new_values = {}
         
-        placeholders = ', '.join(['?' for _ in range(len(columns))])
-        query = f"INSERT INTO trades ({', '.join(columns)}) VALUES ({placeholders})"
+        for i, col_name in enumerate(columns):
+            if col_name == 'id':
+                new_values[col_name] = None
+            elif col_name == 'timestamp':
+                new_values[col_name] = timestamp
+            elif col_name == 'decision':
+                new_values[col_name] = 'hold'
+            elif col_name == 'percentage':
+                new_values[col_name] = 0
+            elif col_name == 'reason':
+                new_values[col_name] = f'Manual withdraw: {description}'
+            elif col_name == 'btc_balance':
+                new_values[col_name] = latest_trade[i]
+            elif col_name == 'krw_balance':
+                new_values[col_name] = latest_trade[i] - amount  # KRW 감소
+            elif col_name == 'btc_avg_buy_price':
+                new_values[col_name] = latest_trade[i]
+            elif col_name == 'btc_krw_price':
+                new_values[col_name] = latest_trade[i]
+            elif col_name == 'reflection':
+                new_values[col_name] = f'Manual withdraw of {amount:,} KRW processed'
+            else:
+                # 기타 컬럼들 안전 처리
+                if latest_trade[i] is not None:
+                    new_values[col_name] = latest_trade[i]
+                else:
+                    col_type = columns_info[i][2].upper()
+                    if 'INTEGER' in col_type:
+                        new_values[col_name] = 0
+                    elif 'REAL' in col_type or 'FLOAT' in col_type:
+                        new_values[col_name] = 0.0
+                    elif 'TEXT' in col_type:
+                        new_values[col_name] = ''
+                    else:
+                        new_values[col_name] = None
         
-        cursor.execute(query, new_record)
+        # INSERT 실행
+        columns_str = ', '.join(columns)
+        placeholders = ', '.join(['?' for _ in columns])
+        values_list = [new_values[col] for col in columns]
+        
+        query = f"INSERT INTO trades ({columns_str}) VALUES ({placeholders})"
+        cursor.execute(query, values_list)
         conn.commit()
         
-        print(f"✅ 출금 내역이 성공적으로 추가되었습니다!")
-        print(f"   이전 KRW 잔액: {latest_trade[krw_balance_idx]:,}원")
-        print(f"   새로운 KRW 잔액: {new_record[krw_balance_idx]:,}원")
+        print(f"\n✅ 출금 내역이 성공적으로 추가되었습니다!")
+        print(f"   이전 KRW 잔액: {current_krw:,}원")
+        print(f"   새로운 KRW 잔액: {new_values['krw_balance']:,}원")
+        print(f"   감소액: -{amount:,}원")
         
         conn.close()
         
     except Exception as e:
         print(f"❌ 오류 발생: {e}")
+        import traceback
+        traceback.print_exc()
 
 def show_recent_trades():
     """최근 거래 내역 확인"""
