@@ -116,7 +116,7 @@ def detect_cash_flows(df):
             krw_change = curr_krw - prev_krw
             
             # BTC 변화 없고 KRW만 변화 = 입출금
-            if btc_change < 0.000001 and abs(krw_change) > 100:
+            if btc_change < 0.00001 and abs(krw_change) > 1000:
                 if krw_change > 0:
                     df.loc[i, 'cash_flow_type'] = 'deposit'
                     df.loc[i, 'deposit_amount'] = krw_change
