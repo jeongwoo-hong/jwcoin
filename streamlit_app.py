@@ -19,8 +19,8 @@ def get_connection():
     """데이터베이스 연결"""
     return sqlite3.connect('bitcoin_trades.db')
 
-def format_dynamic_metric(value, label, delta=None):
-    """동적 폰트 크기와 정확한 금액 표시"""
+def format_dynamic_metric(value, label, delta=None, unit="KRW"):
+    """동적 폰트 크기와 정확한 금액 표시 (개선된 디자인)"""
     if pd.isna(value):
         value = 0
     
@@ -49,23 +49,38 @@ def format_dynamic_metric(value, label, delta=None):
         else:  # 1만 미만
             if 0 < abs(num) < 1:  # BTC 같은 소수
                 display_value = f"{num:.6f}"
+                unit = "BTC" if unit == "KRW" else unit
             else:
                 display_value = f"{num:,.0f}"
             font_size = "32px"
         
-        # 정확한 금액
+        # 정확한 금액 (단위 포함)
         if abs(num) >= 1:
-            exact_value = f"{num:,.0f}"
+            exact_value = f"{num:,.0f} {unit}"
         else:
-            exact_value = f"{num:.6f}"
+            exact_value = f"{num:.6f} {unit}"
         
-        # HTML로 커스텀 메트릭 생성
+        # 수익/손실에 따른 색상
+        if "이익" in label:
+            bg_color = "rgba(212, 237, 218, 0.3)"  # 연한 초록 투명
+            text_color = "#155724"
+        elif "손실" in label:
+            bg_color = "rgba(248, 215, 218, 0.3)"  # 연한 빨강 투명
+            text_color = "#721c24"
+        else:
+            bg_color = "rgba(248, 249, 250, 0.1)"  # 연한 회색 투명
+            text_color = "#1f2937"
+        
+        # HTML로 커스텀 메트릭 생성 (투명 배경)
         metric_html = f"""
-        <div style="padding: 10px; border: 1px solid #e1e5e9; border-radius: 8px; background-color: #fafbfc; margin-bottom: 10px;">
-            <div style="font-size: 14px; color: #6c757d; margin-bottom: 5px;">{label}</div>
-            <div style="font-size: {font_size}; font-weight: bold; color: #1f2937; margin-bottom: 3px;">{display_value}</div>
-            <div style="font-size: 12px; color: #6c757d;">정확히: {exact_value}</div>
-            {f'<div style="font-size: 12px; color: #28a745; margin-top: 3px;">{delta}</div>' if delta else ''}
+        <div style="padding: 15px; border: 1px solid rgba(225, 229, 233, 0.3); 
+                    border-radius: 12px; background-color: {bg_color}; 
+                    margin-bottom: 10px; backdrop-filter: blur(10px);">
+            <div style="font-size: 14px; color: #6c757d; margin-bottom: 8px; font-weight: 500;">{label}</div>
+            <div style="font-size: {font_size}; font-weight: bold; color: {text_color}; 
+                        margin-bottom: 5px; line-height: 1.2;">{display_value}</div>
+            <div style="font-size: 11px; color: #8e9297; font-family: monospace;">정확히: {exact_value}</div>
+            {f'<div style="font-size: 12px; color: #28a745; margin-top: 5px; font-weight: 500;">{delta}</div>' if delta else ''}
         </div>
         """
         
@@ -73,9 +88,10 @@ def format_dynamic_metric(value, label, delta=None):
         
     except (ValueError, TypeError):
         return f"""
-        <div style="padding: 10px; border: 1px solid #e1e5e9; border-radius: 8px; background-color: #fafbfc;">
-            <div style="font-size: 14px; color: #6c757d;">{label}</div>
-            <div style="font-size: 24px; font-weight: bold;">{value}</div>
+        <div style="padding: 15px; border: 1px solid rgba(225, 229, 233, 0.3); 
+                    border-radius: 12px; background-color: rgba(248, 249, 250, 0.1);">
+            <div style="font-size: 14px; color: #6c757d; font-weight: 500;">{label}</div>
+            <div style="font-size: 24px; font-weight: bold; color: #1f2937;">{value}</div>
         </div>
         """
 
@@ -456,13 +472,21 @@ def main():
     total_fees = latest['cumulative_fees']
     
     metrics_data = [
-        (profit_status, abs(realized_profit), profit_delta),
-        ("총 매도금액", sell_amount, None),
-        ("실현 수익률", f"{realized_rate:.2f}%", rate_delta),
-        ("총 거래수수료", total_fees, None)
+        (profit_status, abs(realized_profit), profit_delta, "KRW"),
+        ("총 매도금액", sell_amount, None, "KRW"),
+        ("실현 수익률", f"{realized_rate:.2f}", rate_delta, "%"),
+        ("총 거래수수료", total_fees, None, "KRW")
     ]
     
-    create_responsive_metrics_row(metrics_data)
+    # 개선된 메트릭 표시
+    cols = st.columns(4)
+    for i, (label, value, delta, unit) in enumerate(metrics_data):
+        with cols[i]:
+            if unit == "%":
+                metric_html = format_dynamic_metric(value, label, delta, unit)
+            else:
+                metric_html = format_dynamic_metric(value, label, delta, unit)
+            st.markdown(metric_html, unsafe_allow_html=True)
 
     # 현재 보유 자산 현황 - 동적 폰트 크기
     st.markdown("---")
@@ -475,13 +499,18 @@ def main():
     unrealized_status = "평가이익 (미실현)" if unrealized >= 0 else "평가손실 (미실현)"
     
     asset_metrics_data = [
-        ("현재 자산가치", asset_value, None),
-        ("보유 BTC", btc_amount, f"{btc_amount:.6f} BTC"),
-        ("보유 현금", krw_amount, None),
-        (unrealized_status, abs(unrealized), f"{unrealized:+,.0f} KRW")
+        ("현재 자산가치", asset_value, None, "KRW"),
+        ("보유 BTC", btc_amount, f"{btc_amount:.6f} BTC", "BTC"),
+        ("보유 현금", krw_amount, None, "KRW"),
+        (unrealized_status, abs(unrealized), f"{unrealized:+,.0f} KRW", "KRW")
     ]
     
-    create_responsive_metrics_row(asset_metrics_data)
+    # 개선된 메트릭 표시
+    cols = st.columns(4)
+    for i, (label, value, delta, unit) in enumerate(asset_metrics_data):
+        with cols[i]:
+            metric_html = format_dynamic_metric(value, label, delta, unit)
+            st.markdown(metric_html, unsafe_allow_html=True)
 
     st.markdown("---")
 
