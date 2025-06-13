@@ -42,7 +42,7 @@ def format_number(value):
 # ============================================================================
 
 def load_data():
-    """데이터베이스에서 거래 데이터 로드"""
+    """데이터베이스에서 거래 데이터 로드 (안전한 날짜 파싱)"""
     conn = get_connection()
     query = "SELECT * FROM trades ORDER BY timestamp ASC"
     df = pd.read_sql_query(query, conn)
@@ -51,7 +51,23 @@ def load_data():
     if len(df) == 0:
         return df
     
-    df['timestamp'] = pd.to_datetime(df['timestamp'])
+    # 안전한 날짜 파싱
+    try:
+        # 여러 날짜 형식 처리
+        df['timestamp'] = pd.to_datetime(df['timestamp'], format='mixed', errors='coerce')
+        
+        # 파싱에 실패한 행들 확인
+        invalid_dates = df[df['timestamp'].isna()]
+        if len(invalid_dates) > 0:
+            print(f"⚠️ 날짜 파싱 실패한 행: {len(invalid_dates)}개")
+            # 실패한 행들은 현재 시간으로 대체
+            df.loc[df['timestamp'].isna(), 'timestamp'] = pd.Timestamp.now()
+            
+    except Exception as e:
+        print(f"날짜 파싱 오류: {e}")
+        # 모든 날짜를 현재 시간으로 설정 (최후 수단)
+        df['timestamp'] = pd.Timestamp.now()
+    
     return df
 
 def detect_cash_flows(df):
@@ -256,15 +272,205 @@ def create_cashflow_chart(df):
 def main():
     st.set_page_config(page_title="Bitcoin Dashboard", layout="wide")
     
-    # 헤더
-    col1, col2 = st.columns([4, 1])
+    # 헤더 + 수동 입출금 관리
+    col1, col2, col3 = st.columns([3, 1, 1])
     with col1:
         st.title('🚀 Bitcoin Investment Dashboard')
     with col2:
         if st.button("🔄 새로고침", type="primary"):
             st.rerun()
+    with col3:
+        if st.button("💰 입출금 관리"):
+            st.session_state.show_manual_manager = True
     
-    st.markdown("---")
+    # 수동 입출금 관리 UI
+    if st.session_state.get('show_manual_manager', False):
+        st.markdown("---")
+        st.header('💰 수동 입출금 관리')
+        
+        tab1, tab2, tab3 = st.tabs(["입금 추가", "출금 추가", "내역 확인"])
+        
+        with tab1:
+            st.subheader("📥 입금 내역 추가")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                deposit_amount = st.number_input("입금 금액 (원)", min_value=0, value=500000, step=1000)
+                deposit_desc = st.text_input("설명", value="누락된 입금 복구")
+            
+            with col2:
+                use_custom_date = st.checkbox("특정 날짜 지정")
+                if use_custom_date:
+                    deposit_date = st.date_input("날짜")
+                    deposit_time = st.time_input("시간")
+                    deposit_datetime = f"{deposit_date} {deposit_time}"
+                else:
+                    deposit_datetime = None
+            
+            if st.button("✅ 입금 추가", type="primary"):
+                try:
+                    # 데이터베이스에 입금 내역 추가
+                    conn = get_connection()
+                    cursor = conn.cursor()
+                    
+                    # 최신 거래 정보 가져오기
+                    cursor.execute("SELECT * FROM trades ORDER BY timestamp DESC LIMIT 1")
+                    latest_trade = cursor.fetchone()
+                    
+                    if latest_trade:
+                        # 컬럼명 가져오기
+                        cursor.execute("PRAGMA table_info(trades)")
+                        columns = [col[1] for col in cursor.fetchall()]
+                        
+                        # 새 레코드 생성
+                        new_record = list(latest_trade)
+                        new_record[0] = None  # ID 자동 생성
+                        
+                        # 인덱스 찾기
+                        timestamp_idx = columns.index('timestamp')
+                        krw_balance_idx = columns.index('krw_balance')
+                        decision_idx = columns.index('decision')
+                        reason_idx = columns.index('reason')
+                        
+                        # 새 값 설정
+                        if deposit_datetime:
+                            new_record[timestamp_idx] = deposit_datetime
+                        else:
+                            from datetime import datetime
+                            new_record[timestamp_idx] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                        
+                        new_record[krw_balance_idx] = latest_trade[krw_balance_idx] + deposit_amount
+                        new_record[decision_idx] = 'hold'
+                        new_record[reason_idx] = f'Manual deposit: {deposit_desc}'
+                        
+                        # 삽입
+                        placeholders = ', '.join(['?' for _ in range(len(columns))])
+                        query = f"INSERT INTO trades ({', '.join(columns)}) VALUES ({placeholders})"
+                        cursor.execute(query, new_record)
+                        conn.commit()
+                        conn.close()
+                        
+                        st.success(f"✅ {deposit_amount:,}원 입금 내역이 추가되었습니다!")
+                        st.rerun()
+                    
+                except Exception as e:
+                    st.error(f"❌ 오류 발생: {e}")
+        
+        with tab2:
+            st.subheader("📤 출금 내역 추가")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                withdraw_amount = st.number_input("출금 금액 (원)", min_value=0, value=100000, step=1000)
+                withdraw_desc = st.text_input("설명 ", value="수동 추가 출금")
+            
+            with col2:
+                use_custom_date2 = st.checkbox("특정 날짜 지정 ")
+                if use_custom_date2:
+                    withdraw_date = st.date_input("날짜 ")
+                    withdraw_time = st.time_input("시간 ")
+                    withdraw_datetime = f"{withdraw_date} {withdraw_time}"
+                else:
+                    withdraw_datetime = None
+            
+            if st.button("✅ 출금 추가", type="secondary"):
+                try:
+                    conn = get_connection()
+                    cursor = conn.cursor()
+                    
+                    cursor.execute("SELECT * FROM trades ORDER BY timestamp DESC LIMIT 1")
+                    latest_trade = cursor.fetchone()
+                    
+                    if latest_trade:
+                        cursor.execute("PRAGMA table_info(trades)")
+                        columns = [col[1] for col in cursor.fetchall()]
+                        
+                        krw_balance_idx = columns.index('krw_balance')
+                        
+                        # 잔액 확인
+                        if latest_trade[krw_balance_idx] < withdraw_amount:
+                            st.warning(f"⚠️ 현재 KRW 잔액({latest_trade[krw_balance_idx]:,}원)이 부족합니다.")
+                            if not st.checkbox("강제 실행"):
+                                st.stop()
+                        
+                        new_record = list(latest_trade)
+                        new_record[0] = None
+                        
+                        timestamp_idx = columns.index('timestamp')
+                        decision_idx = columns.index('decision')
+                        reason_idx = columns.index('reason')
+                        
+                        if withdraw_datetime:
+                            new_record[timestamp_idx] = withdraw_datetime
+                        else:
+                            from datetime import datetime
+                            new_record[timestamp_idx] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                        
+                        new_record[krw_balance_idx] = latest_trade[krw_balance_idx] - withdraw_amount
+                        new_record[decision_idx] = 'hold'
+                        new_record[reason_idx] = f'Manual withdraw: {withdraw_desc}'
+                        
+                        placeholders = ', '.join(['?' for _ in range(len(columns))])
+                        query = f"INSERT INTO trades ({', '.join(columns)}) VALUES ({placeholders})"
+                        cursor.execute(query, new_record)
+                        conn.commit()
+                        conn.close()
+                        
+                        st.success(f"✅ {withdraw_amount:,}원 출금 내역이 추가되었습니다!")
+                        st.rerun()
+                    
+                except Exception as e:
+                    st.error(f"❌ 오류 발생: {e}")
+        
+        with tab3:
+            st.subheader("📋 최근 입출금 의심 내역")
+            
+            try:
+                conn = get_connection()
+                # KRW 변화 큰 구간 찾기
+                df_check = pd.read_sql_query("""
+                    SELECT 
+                        timestamp,
+                        krw_balance,
+                        LAG(krw_balance) OVER (ORDER BY timestamp) as prev_krw,
+                        krw_balance - LAG(krw_balance) OVER (ORDER BY timestamp) as krw_change,
+                        decision,
+                        reason
+                    FROM trades 
+                    ORDER BY timestamp DESC
+                    LIMIT 20
+                """, conn)
+                conn.close()
+                
+                # 큰 변화 필터링
+                big_changes = df_check[
+                    (abs(df_check['krw_change']) > 50000) & 
+                    (df_check['krw_change'].notna())
+                ]
+                
+                if len(big_changes) > 0:
+                    st.write("**큰 KRW 변화가 있었던 거래들:**")
+                    
+                    display_df = big_changes[['timestamp', 'krw_change', 'decision', 'reason']].copy()
+                    display_df['krw_change'] = display_df['krw_change'].apply(
+                        lambda x: f"+{x:,.0f}원" if x > 0 else f"{x:,.0f}원"
+                    )
+                    display_df.columns = ['시간', 'KRW 변화', '결정', '이유']
+                    
+                    st.dataframe(display_df, use_container_width=True)
+                else:
+                    st.info("큰 KRW 변화가 감지되지 않았습니다.")
+                    
+            except Exception as e:
+                st.error(f"오류: {e}")
+        
+        if st.button("❌ 관리 창 닫기"):
+            st.session_state.show_manual_manager = False
+            st.rerun()
+        
+        st.markdown("---")
+    
+    # 기존 대시보드 내용...
 
     # 데이터 로드 및 처리
     df = load_data()
