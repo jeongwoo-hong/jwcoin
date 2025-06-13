@@ -139,7 +139,7 @@ def calculate_trading_amounts(df):
     return df
 
 def calculate_simple_profit_loss(df):
-    """간단한 순이익/순손실 계산 (입출금 고려)"""
+    """정확한 순이익/순손실 계산"""
     df = df.copy()
     df = calculate_trading_amounts(df)
     
@@ -156,10 +156,10 @@ def calculate_simple_profit_loss(df):
         cumulative_sell = df['sell_amount'][:i+1].sum()
         cumulative_fees = df['trading_fee'][:i+1].sum()
         
-        # 순투자금액 = 매수금액 - 매도금액 + 수수료
+        # 순투자금액 = 매수금액 - 매도금액 + 수수료 (실제로 들어간 돈)
         net_investment = cumulative_buy - cumulative_sell + cumulative_fees
         
-        # 순손익 = 현재 자산가치 - 순투자금액
+        # 순이익/순손실 = 현재 자산가치 - 순투자금액
         net_profit_loss = total_asset_value - net_investment
         
         # 결과 저장
@@ -170,7 +170,7 @@ def calculate_simple_profit_loss(df):
         df.loc[i, 'cumulative_sell'] = cumulative_sell
         df.loc[i, 'cumulative_fees'] = cumulative_fees
         
-        # 수익률 (참고용)
+        # 수익률 계산
         if net_investment > 0:
             profit_rate = (net_profit_loss / net_investment) * 100
         else:
