@@ -19,36 +19,74 @@ def get_connection():
     """데이터베이스 연결"""
     return sqlite3.connect('bitcoin_trades.db')
 
-def format_metric_text(value, max_length=12):
-    """메트릭 텍스트의 길이를 자동으로 조절"""
+def format_dynamic_metric(value, label, delta=None):
+    """동적 폰트 크기와 정확한 금액 표시"""
     if pd.isna(value):
-        return "0"
+        value = 0
     
     try:
         num = float(value)
         
-        # 작은 소수의 경우 (BTC 등)
-        if 0 < abs(num) < 1:
-            return f"{num:.6f}"
-        
-        # 큰 숫자의 경우 단위 변환
-        if abs(num) >= 1_000_000_000:
-            return f"{num/1_000_000_000:.1f}B"
-        elif abs(num) >= 1_000_000:
-            return f"{num/1_000_000:.1f}M"
-        elif abs(num) >= 1_000:
-            return f"{num/1_000:.1f}K"
-        else:
-            # 일반 숫자의 경우
-            if abs(num) >= 100:
-                return f"{num:,.0f}"
+        # 금액 크기에 따른 표시 형식과 폰트 크기 결정
+        if abs(num) >= 1_000_000_000:  # 10억 이상
+            display_value = f"{num/1_000_000_000:.1f}B"
+            font_size = "20px"
+        elif abs(num) >= 100_000_000:  # 1억 이상
+            display_value = f"{num/100_000_000:.1f}억"
+            font_size = "22px"
+        elif abs(num) >= 10_000_000:  # 1천만 이상
+            display_value = f"{num/10_000_000:.1f}천만"
+            font_size = "24px"
+        elif abs(num) >= 1_000_000:  # 100만 이상
+            display_value = f"{num/1_000_000:.1f}M"
+            font_size = "26px"
+        elif abs(num) >= 100_000:  # 10만 이상
+            display_value = f"{num/10_000:.0f}만"
+            font_size = "28px"
+        elif abs(num) >= 10_000:  # 1만 이상
+            display_value = f"{num:,.0f}"
+            font_size = "30px"
+        else:  # 1만 미만
+            if 0 < abs(num) < 1:  # BTC 같은 소수
+                display_value = f"{num:.6f}"
             else:
-                return f"{num:.2f}"
-                
+                display_value = f"{num:,.0f}"
+            font_size = "32px"
+        
+        # 정확한 금액
+        if abs(num) >= 1:
+            exact_value = f"{num:,.0f}"
+        else:
+            exact_value = f"{num:.6f}"
+        
+        # HTML로 커스텀 메트릭 생성
+        metric_html = f"""
+        <div style="padding: 10px; border: 1px solid #e1e5e9; border-radius: 8px; background-color: #fafbfc; margin-bottom: 10px;">
+            <div style="font-size: 14px; color: #6c757d; margin-bottom: 5px;">{label}</div>
+            <div style="font-size: {font_size}; font-weight: bold; color: #1f2937; margin-bottom: 3px;">{display_value}</div>
+            <div style="font-size: 12px; color: #6c757d;">정확히: {exact_value}</div>
+            {f'<div style="font-size: 12px; color: #28a745; margin-top: 3px;">{delta}</div>' if delta else ''}
+        </div>
+        """
+        
+        return metric_html
+        
     except (ValueError, TypeError):
-        # 문자열인 경우 줄임
-        text = str(value)
-        return text[:max_length-3] + "..." if len(text) > max_length else text
+        return f"""
+        <div style="padding: 10px; border: 1px solid #e1e5e9; border-radius: 8px; background-color: #fafbfc;">
+            <div style="font-size: 14px; color: #6c757d;">{label}</div>
+            <div style="font-size: 24px; font-weight: bold;">{value}</div>
+        </div>
+        """
+
+def create_responsive_metrics_row(metrics_data):
+    """반응형 메트릭 행 생성"""
+    cols = st.columns(len(metrics_data))
+    
+    for i, (label, value, delta) in enumerate(metrics_data):
+        with cols[i]:
+            metric_html = format_dynamic_metric(value, label, delta)
+            st.markdown(metric_html, unsafe_allow_html=True)
 
 def translate_reason(reason):
     """거래 이유 한국어 번역"""
@@ -405,53 +443,45 @@ def main():
     # 최신 업데이트 정보 표시
     st.info(f"📊 최신 거래: {latest['timestamp'].strftime('%Y-%m-%d %H:%M:%S')} | 총 거래: {len(df)}개")
 
-    # 핵심 지표 (실현이익 중심)
+    # 핵심 지표 (실현이익 중심) - 동적 폰트 크기
     st.header('💰 실현이익 현황')
     
-    col1, col2, col3, col4 = st.columns(4)
+    realized_profit = latest['realized_profit_after_fees']
+    profit_status = "실현이익" if realized_profit >= 0 else "실현손실"
+    profit_delta = f"{realized_profit:+,.0f} KRW"
     
-    with col1:
-        realized_profit = latest['realized_profit_after_fees']
-        profit_color = "normal" if realized_profit >= 0 else "inverse"
-        status = "실현이익" if realized_profit >= 0 else "실현손실"
-        st.metric(status, f"{format_metric_text(abs(realized_profit))} KRW",
-                 delta=f"{realized_profit:,.0f} KRW")
+    sell_amount = latest['cumulative_sell']
+    realized_rate = latest['realized_return_rate']
+    rate_delta = f"{realized_rate:+.2f}%"
+    total_fees = latest['cumulative_fees']
     
-    with col2:
-        sell_amount = latest['cumulative_sell']
-        st.metric("총 매도금액", f"{format_metric_text(sell_amount)} KRW")
+    metrics_data = [
+        (profit_status, abs(realized_profit), profit_delta),
+        ("총 매도금액", sell_amount, None),
+        ("실현 수익률", f"{realized_rate:.2f}%", rate_delta),
+        ("총 거래수수료", total_fees, None)
+    ]
     
-    with col3:
-        realized_rate = latest['realized_return_rate']
-        st.metric("실현 수익률", f"{realized_rate:.2f}%",
-                 delta=f"{realized_rate:.2f}%")
-    
-    with col4:
-        total_fees = latest['cumulative_fees']
-        st.metric("총 거래수수료", f"{format_metric_text(total_fees)} KRW")
+    create_responsive_metrics_row(metrics_data)
 
-    # 현재 보유 자산 현황
+    # 현재 보유 자산 현황 - 동적 폰트 크기
     st.markdown("---")
     st.header('📋 현재 보유 자산')
     
-    col1, col2, col3, col4 = st.columns(4)
+    asset_value = latest['total_asset_value']
+    btc_amount = latest['btc_balance']
+    krw_amount = latest['krw_balance']
+    unrealized = latest['unrealized_profit']
+    unrealized_status = "평가이익 (미실현)" if unrealized >= 0 else "평가손실 (미실현)"
     
-    with col1:
-        asset_value = latest['total_asset_value']
-        st.metric("현재 자산가치", f"{format_metric_text(asset_value)} KRW")
+    asset_metrics_data = [
+        ("현재 자산가치", asset_value, None),
+        ("보유 BTC", btc_amount, f"{btc_amount:.6f} BTC"),
+        ("보유 현금", krw_amount, None),
+        (unrealized_status, abs(unrealized), f"{unrealized:+,.0f} KRW")
+    ]
     
-    with col2:
-        btc_amount = latest['btc_balance']
-        st.metric("보유 BTC", f"{format_metric_text(btc_amount)} BTC")
-    
-    with col3:
-        krw_amount = latest['krw_balance']
-        st.metric("보유 현금", f"{format_metric_text(krw_amount)} KRW")
-    
-    with col4:
-        unrealized = latest['unrealized_profit']
-        status = "평가이익" if unrealized >= 0 else "평가손실"
-        st.metric(f"{status} (미실현)", f"{format_metric_text(abs(unrealized))} KRW")
+    create_responsive_metrics_row(asset_metrics_data)
 
     st.markdown("---")
 
@@ -470,38 +500,66 @@ def main():
         fig_trading = create_trading_volume_chart(df)
         st.plotly_chart(fig_trading, use_container_width=True)
 
-    # 거래 성과 요약
+    # 거래 성과 요약 - 동적 폰트 적용
     st.header('💼 거래 성과 요약')
     
+    total_buy = latest['cumulative_buy']
+    total_sell = latest['cumulative_sell']
+    
+    # 거래 효율성 계산
+    if latest['cumulative_sell'] > 0:
+        trading_efficiency = (latest['realized_profit_after_fees'] / latest['cumulative_sell']) * 100
+    else:
+        trading_efficiency = 0
+    
+    trade_count = len(df[df['sell_amount'] > 0])
+    
+    # BTC 가격 정보
+    current_price = latest['btc_krw_price']
+    avg_price = latest['btc_avg_buy_price']
+    price_diff = ((current_price - avg_price) / avg_price * 100) if avg_price > 0 else 0
+    
+    # 3개 컬럼으로 나누어 표시
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        total_buy = latest['cumulative_buy']
-        st.metric("총 매수금액", f"{format_metric_text(total_buy)} KRW")
-        
-        total_sell = latest['cumulative_sell']
-        st.metric("총 매도금액", f"{format_metric_text(total_sell)} KRW")
+        st.subheader("거래 규모")
+        buy_metrics = [
+            ("총 매수금액", total_buy, None),
+            ("총 매도금액", total_sell, None)
+        ]
+        create_responsive_metrics_row(buy_metrics)
     
     with col2:
-        # 거래 수익성 분석
-        if latest['cumulative_sell'] > 0:
-            trading_efficiency = (latest['realized_profit_after_fees'] / latest['cumulative_sell']) * 100
-            st.metric("매도 거래 효율성", f"{trading_efficiency:.2f}%")
-        else:
-            st.metric("매도 거래 효율성", "0.00%")
-        
-        trade_count = len(df[df['sell_amount'] > 0])
-        st.metric("매도 거래 횟수", f"{trade_count}회")
+        st.subheader("거래 효율성")
+        efficiency_metrics = [
+            ("매도 거래 효율성", f"{trading_efficiency:.2f}%", f"{trading_efficiency:+.2f}%"),
+            ("매도 거래 횟수", f"{trade_count}회", None)
+        ]
+        create_responsive_metrics_row(efficiency_metrics)
     
     with col3:
-        # BTC 가격 정보
-        current_price = latest['btc_krw_price']
-        avg_price = latest['btc_avg_buy_price']
-        price_diff = ((current_price - avg_price) / avg_price * 100) if avg_price > 0 else 0
+        st.subheader("BTC 가격 정보")
+        price_metrics = [
+            ("현재 BTC 가격", current_price, f"{current_price:,.0f} KRW"),
+            ("평균 매수가", avg_price, f"{avg_price:,.0f} KRW")
+        ]
+        create_responsive_metrics_row(price_metrics)
         
-        st.metric("현재 BTC 가격", f"{current_price:,.0f} KRW")
-        st.metric("평균 매수가", f"{avg_price:,.0f} KRW")
-        st.metric("가격 차이", f"{price_diff:.2f}%")
+        # 가격 차이는 별도 표시
+        st.markdown(f"""
+        <div style="padding: 10px; border: 1px solid #e1e5e9; border-radius: 8px; 
+                    background-color: {'#d4edda' if price_diff >= 0 else '#f8d7da'}; margin-top: 10px;">
+            <div style="font-size: 14px; color: #6c757d;">가격 차이</div>
+            <div style="font-size: 24px; font-weight: bold; 
+                        color: {'#155724' if price_diff >= 0 else '#721c24'};">
+                {price_diff:+.2f}%
+            </div>
+            <div style="font-size: 12px; color: #6c757d;">
+                {current_price - avg_price:+,.0f} KRW
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
     # 최근 거래 내역
     st.header('📜 최근 거래 내역')
