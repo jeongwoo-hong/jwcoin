@@ -71,29 +71,58 @@ def load_data():
     return df
 
 def detect_cash_flows(df):
-    """입출금 감지"""
+    """입출금 감지 (수동 추가 데이터 포함)"""
     df = df.copy().reset_index(drop=True)
     df['cash_flow_type'] = 'trade'
     df['deposit_amount'] = 0.0
     df['withdraw_amount'] = 0.0
     
-    for i in range(1, len(df)):
-        prev_btc = df.loc[i-1, 'btc_balance']
-        curr_btc = df.loc[i, 'btc_balance']
-        prev_krw = df.loc[i-1, 'krw_balance']
-        curr_krw = df.loc[i, 'krw_balance']
+    for i in range(len(df)):
+        current_reason = str(df.loc[i, 'reason']).lower() if pd.notna(df.loc[i, 'reason']) else ''
         
-        btc_change = abs(curr_btc - prev_btc)
-        krw_change = curr_krw - prev_krw
-        
-        # BTC 변화 없고 KRW만 변화 = 입출금
-        if btc_change < 0.000001 and abs(krw_change) > 100:
-            if krw_change > 0:
-                df.loc[i, 'cash_flow_type'] = 'deposit'
-                df.loc[i, 'deposit_amount'] = krw_change
+        # 수동 입금/출금 감지 (reason 컬럼 확인)
+        if 'manual deposit' in current_reason:
+            df.loc[i, 'cash_flow_type'] = 'deposit'
+            # KRW 변화량으로 입금액 계산
+            if i > 0:
+                krw_change = df.loc[i, 'krw_balance'] - df.loc[i-1, 'krw_balance']
+                if krw_change > 0:
+                    df.loc[i, 'deposit_amount'] = krw_change
             else:
-                df.loc[i, 'cash_flow_type'] = 'withdraw'
-                df.loc[i, 'withdraw_amount'] = abs(krw_change)
+                # 첫 번째 행인 경우, reason에서 금액 추출 시도
+                import re
+                amount_match = re.search(r'(\d{1,3}(?:,\d{3})*)', current_reason)
+                if amount_match:
+                    df.loc[i, 'deposit_amount'] = float(amount_match.group(1).replace(',', ''))
+            continue
+        
+        elif 'manual withdraw' in current_reason:
+            df.loc[i, 'cash_flow_type'] = 'withdraw'
+            # KRW 변화량으로 출금액 계산
+            if i > 0:
+                krw_change = df.loc[i-1, 'krw_balance'] - df.loc[i, 'krw_balance']
+                if krw_change > 0:
+                    df.loc[i, 'withdraw_amount'] = krw_change
+            continue
+        
+        # 자동 감지 (BTC 변화 없고 KRW만 변화)
+        if i > 0:
+            prev_btc = df.loc[i-1, 'btc_balance']
+            curr_btc = df.loc[i, 'btc_balance']
+            prev_krw = df.loc[i-1, 'krw_balance']
+            curr_krw = df.loc[i, 'krw_balance']
+            
+            btc_change = abs(curr_btc - prev_btc)
+            krw_change = curr_krw - prev_krw
+            
+            # BTC 변화 없고 KRW만 변화 = 입출금
+            if btc_change < 0.000001 and abs(krw_change) > 100:
+                if krw_change > 0:
+                    df.loc[i, 'cash_flow_type'] = 'deposit'
+                    df.loc[i, 'deposit_amount'] = krw_change
+                else:
+                    df.loc[i, 'cash_flow_type'] = 'withdraw'
+                    df.loc[i, 'withdraw_amount'] = abs(krw_change)
     
     return df
 
