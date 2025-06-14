@@ -47,40 +47,74 @@ class CLIDBManager:
         conn.commit()
         conn.close()
     
-    def view_trades(self, limit=20, transaction_type=None):
+    def view_trades(self, limit=20, transaction_type=None, trade_id=None):
         """거래 내역 조회"""
         conn = self.get_connection()
         
-        query = "SELECT id, timestamp, transaction_type, decision, percentage, btc_balance, krw_balance, reason FROM trades"
-        params = []
+        if trade_id:
+            # 특정 ID 조회
+            query = "SELECT * FROM trades WHERE id = ?"
+            params = [trade_id]
+            df = pd.read_sql_query(query, conn, params=params)
+            
+            if df.empty:
+                print(f"❌ ID {trade_id}에 해당하는 거래를 찾을 수 없습니다.")
+                conn.close()
+                return
+            
+            # 상세 정보 출력
+            trade = df.iloc[0]
+            print(f"\n🔍 거래 상세 정보 (ID: {trade_id})")
+            print("=" * 60)
+            print(f"시간: {trade['timestamp']}")
+            print(f"거래 유형: {trade.get('transaction_type', 'trade')}")
+            print(f"결정: {trade['decision']}")
+            print(f"비율: {trade['percentage']}%")
+            print(f"BTC 잔고: {trade['btc_balance']:.8f}")
+            print(f"KRW 잔고: {trade['krw_balance']:,.0f}원")
+            print(f"BTC 평균 매수가: {trade['btc_avg_buy_price']:,.0f}원")
+            print(f"BTC 현재가: {trade['btc_krw_price']:,.0f}원")
+            print(f"이유: {trade['reason']}")
+            if trade.get('notes'):
+                print(f"메모: {trade['notes']}")
+            if trade.get('reflection'):
+                print(f"반성: {trade['reflection']}")
+            print(f"수동 입력: {'예' if trade.get('manual_entry') else '아니오'}")
+            
+        else:
+            # 일반 조회
+            query = "SELECT id, timestamp, transaction_type, decision, percentage, btc_balance, krw_balance, reason FROM trades"
+            params = []
+            
+            if transaction_type:
+                query += " WHERE transaction_type = ?"
+                params.append(transaction_type)
+            
+            query += " ORDER BY timestamp DESC"
+            
+            if limit:
+                query += f" LIMIT {limit}"
+            
+            df = pd.read_sql_query(query, conn, params=params)
+            
+            if df.empty:
+                print("📭 거래 내역이 없습니다.")
+                conn.close()
+                return
+            
+            # timestamp 포맷팅
+            df['timestamp'] = pd.to_datetime(df['timestamp']).dt.strftime('%m-%d %H:%M')
+            
+            # 잔고 포맷팅
+            df['btc_balance'] = df['btc_balance'].apply(lambda x: f"{x:.6f}")
+            df['krw_balance'] = df['krw_balance'].apply(lambda x: f"{x:,.0f}")
+            
+            # 테이블 출력
+            print(f"\n📊 거래 내역 (최근 {len(df)}건)")
+            print("=" * 100)
+            print(tabulate(df, headers=df.columns, tablefmt='grid', showindex=False))
         
-        if transaction_type:
-            query += " WHERE transaction_type = ?"
-            params.append(transaction_type)
-        
-        query += " ORDER BY timestamp DESC"
-        
-        if limit:
-            query += f" LIMIT {limit}"
-        
-        df = pd.read_sql_query(query, conn, params=params)
         conn.close()
-        
-        if df.empty:
-            print("📭 거래 내역이 없습니다.")
-            return
-        
-        # timestamp 포맷팅
-        df['timestamp'] = pd.to_datetime(df['timestamp']).dt.strftime('%m-%d %H:%M')
-        
-        # 잔고 포맷팅
-        df['btc_balance'] = df['btc_balance'].apply(lambda x: f"{x:.6f}")
-        df['krw_balance'] = df['krw_balance'].apply(lambda x: f"{x:,.0f}")
-        
-        # 테이블 출력
-        print(f"\n📊 거래 내역 (최근 {len(df)}건)")
-        print("=" * 100)
-        print(tabulate(df, headers=df.columns, tablefmt='grid', showindex=False))
     
     def add_deposit(self, amount, description="Manual deposit"):
         """입금 추가"""
@@ -287,6 +321,7 @@ def main():
     view_parser = subparsers.add_parser('view', help='View trades')
     view_parser.add_argument('--limit', type=int, default=20, help='Number of records to show')
     view_parser.add_argument('--type', choices=['trade', 'deposit', 'withdrawal', 'fee', 'other'], help='Filter by transaction type')
+    view_parser.add_argument('--id', type=int, help='View specific trade by ID')
     
     # deposit 명령
     deposit_parser = subparsers.add_parser('deposit', help='Add manual deposit')
@@ -335,7 +370,7 @@ def main():
     # 명령 실행
     try:
         if args.command == 'view':
-            db_manager.view_trades(args.limit, args.type)
+            db_manager.view_trades(args.limit, args.type, args.id)
         
         elif args.command == 'deposit':
             db_manager.add_deposit(args.amount, args.desc)
