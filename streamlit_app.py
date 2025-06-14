@@ -588,8 +588,8 @@ def main():
     df_display['cash_flow_type'] = df_display['cash_flow_type'].map(type_map)
     df_display.columns = ['시간', '유형', 'BTC가격', 'BTC잔액', 'KRW잔액']
     
-    st.dataframe(df_display.sort_values('시간', ascending=False).head(15), 
-                use_container_width=True)
+    st.dataframe(df_display.sort_values('시간', ascending=False), _container_width=True)
+    # st.dataframe(df_display.sort_values('시간', ascending=False).head(15), _container_width=True)
 
     # 최종 요약
     st.markdown("---")
