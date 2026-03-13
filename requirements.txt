@@ -10,3 +10,4 @@ streamlit
 plotly
 schedule
 googletrans==4.0.0-rc1
+supabase

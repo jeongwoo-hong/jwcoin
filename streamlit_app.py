@@ -1,5 +1,4 @@
 import streamlit as st
-import sqlite3
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -9,6 +8,7 @@ import os
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 import time
+from supabase import create_client, Client
 
 # 환경변수 로드
 load_dotenv()
@@ -18,6 +18,45 @@ load_dotenv()
 # ============================================================================
 
 UPBIT_FEE_RATE = 0.0005  # 업비트 수수료율 0.05%
+
+# ============================================================================
+# Supabase 연결
+# ============================================================================
+
+@st.cache_resource
+def get_supabase_client():
+    """Supabase 클라이언트 생성"""
+    url = os.getenv("SUPABASE_URL")
+    key = os.getenv("SUPABASE_KEY")
+
+    if not url or not key:
+        return None
+
+    return create_client(url, key)
+
+@st.cache_data(ttl=60)
+def get_trades_from_supabase(start_date=None):
+    """Supabase에서 거래 기록 조회"""
+    supabase = get_supabase_client()
+    if not supabase:
+        return pd.DataFrame()
+
+    try:
+        query = supabase.table("trades").select("*").order("timestamp", desc=True)
+
+        if start_date:
+            query = query.gte("timestamp", start_date.isoformat())
+
+        response = query.execute()
+
+        if response.data:
+            df = pd.DataFrame(response.data)
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            return df
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Supabase 조회 실패: {e}")
+        return pd.DataFrame()
 
 # ============================================================================
 # 업비트 API 연결
@@ -118,10 +157,6 @@ def get_current_balance():
 # ============================================================================
 # 유틸리티 함수들
 # ============================================================================
-
-def get_connection():
-    """데이터베이스 연결"""
-    return sqlite3.connect('bitcoin_trades.db')
 
 def format_number(value):
     """숫자 포맷팅"""
@@ -279,16 +314,16 @@ def create_volume_chart(trades_df):
     """거래량 차트"""
     if trades_df.empty:
         return go.Figure()
-    
+
     # 일별 거래량 집계
     trades_df['date'] = trades_df['created_at'].dt.date
     daily_volume = trades_df.groupby(['date', 'side']).agg({
         'executed_volume': 'sum',
         'price': 'mean'
     }).reset_index()
-    
+
     fig = go.Figure()
-    
+
     # 매수량
     buy_volume = daily_volume[daily_volume['side'] == 'bid']
     if not buy_volume.empty:
@@ -299,7 +334,7 @@ def create_volume_chart(trades_df):
             marker_color='blue',
             opacity=0.7
         ))
-    
+
     # 매도량
     sell_volume = daily_volume[daily_volume['side'] == 'ask']
     if not sell_volume.empty:
@@ -310,7 +345,7 @@ def create_volume_chart(trades_df):
             marker_color='red',
             opacity=0.7
         ))
-    
+
     fig.update_layout(
         title='일별 거래량',
         xaxis_title='날짜',
@@ -318,7 +353,92 @@ def create_volume_chart(trades_df):
         height=400,
         barmode='relative'
     )
-    
+
+    return fig
+
+def create_asset_chart(trades_df):
+    """자산 증감 차트 (총 자산 = KRW + BTC*가격)"""
+    if trades_df.empty:
+        return go.Figure()
+
+    # 시간순 정렬
+    df = trades_df.sort_values('timestamp').copy()
+
+    # 총 자산 계산
+    df['total_asset'] = df['krw_balance'] + df['btc_balance'] * df['btc_krw_price']
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Scatter(
+        x=df['timestamp'],
+        y=df['total_asset'],
+        mode='lines+markers',
+        name='총 자산',
+        line=dict(color='#2E86AB', width=2),
+        marker=dict(size=6),
+        fill='tozeroy',
+        fillcolor='rgba(46, 134, 171, 0.1)'
+    ))
+
+    # 시작점 기준선
+    if len(df) > 0:
+        initial_asset = df.iloc[0]['total_asset']
+        fig.add_hline(
+            y=initial_asset,
+            line_dash="dash",
+            line_color="gray",
+            annotation_text=f"시작: {initial_asset:,.0f}원"
+        )
+
+    fig.update_layout(
+        title='자산 증감 추이',
+        xaxis_title='시간',
+        yaxis_title='총 자산 (KRW)',
+        height=400,
+        yaxis=dict(tickformat=',')
+    )
+
+    return fig
+
+def create_profit_chart(trades_df):
+    """실질 수익 차트 (시작점 대비 수익/손실)"""
+    if trades_df.empty:
+        return go.Figure()
+
+    # 시간순 정렬
+    df = trades_df.sort_values('timestamp').copy()
+
+    # 총 자산 및 수익 계산
+    df['total_asset'] = df['krw_balance'] + df['btc_balance'] * df['btc_krw_price']
+    initial_asset = df.iloc[0]['total_asset']
+    df['profit'] = df['total_asset'] - initial_asset
+    df['profit_pct'] = (df['profit'] / initial_asset) * 100
+
+    fig = go.Figure()
+
+    # 색상: 수익이면 초록, 손실이면 빨강
+    colors = ['#00C853' if p >= 0 else '#FF1744' for p in df['profit']]
+
+    fig.add_trace(go.Bar(
+        x=df['timestamp'],
+        y=df['profit'],
+        name='실질 수익',
+        marker_color=colors,
+        text=df['profit_pct'].apply(lambda x: f"{x:+.1f}%"),
+        textposition='outside'
+    ))
+
+    # 0 기준선
+    fig.add_hline(y=0, line_color="black", line_width=1)
+
+    fig.update_layout(
+        title='실질 수익 추이 (시작점 대비)',
+        xaxis_title='시간',
+        yaxis_title='수익/손실 (KRW)',
+        height=400,
+        yaxis=dict(tickformat=',')
+    )
+
     return fig
 
 # ============================================================================
@@ -327,17 +447,26 @@ def create_volume_chart(trades_df):
 
 def main():
     st.set_page_config(page_title="Upbit Trading Dashboard", layout="wide")
-    
+
     # 헤더
     col1, col2, col3 = st.columns([3, 1, 1])
     with col1:
-        st.title('🚀 업비트 거래 대시보드')
+        st.title('업비트 거래 대시보드')
     with col2:
-        if st.button("🔄 새로고침", type="primary"):
+        if st.button("새로고침", type="primary"):
             st.cache_data.clear()
             st.rerun()
     with col3:
-        data_source = st.selectbox("데이터 소스", ["업비트 API", "로컬 DB", "통합"])
+        data_source = st.selectbox("데이터 소스", ["업비트 API", "Supabase", "통합"])
+
+    # 사이드바: 시작일 설정
+    st.sidebar.header("차트 설정")
+    start_date = st.sidebar.date_input(
+        "시작일",
+        value=datetime.now() - timedelta(days=7),
+        max_value=datetime.now()
+    )
+    start_datetime = datetime.combine(start_date, datetime.min.time())
     
     # 업비트 API 연결 확인
     upbit = get_upbit_connection()
@@ -432,17 +561,56 @@ def main():
     
     # 차트
     if not trades_df.empty:
-        st.header('📈 거래 분석')
-        
+        st.header('거래 분석')
+
         col1, col2 = st.columns(2)
-        
+
         with col1:
             timeline_chart = create_trading_timeline_chart(trades_df)
             st.plotly_chart(timeline_chart, use_container_width=True)
-        
+
         with col2:
             volume_chart = create_volume_chart(trades_df)
             st.plotly_chart(volume_chart, use_container_width=True)
+
+    # 자산 증감 / 실질 수익 차트 (Supabase 데이터)
+    st.header('자산 및 수익 추이')
+    st.caption(f"시작일: {start_date} 이후 데이터")
+
+    supabase_trades = get_trades_from_supabase(start_datetime)
+
+    if not supabase_trades.empty:
+        col1, col2 = st.columns(2)
+
+        with col1:
+            asset_chart = create_asset_chart(supabase_trades)
+            st.plotly_chart(asset_chart, use_container_width=True)
+
+        with col2:
+            profit_chart = create_profit_chart(supabase_trades)
+            st.plotly_chart(profit_chart, use_container_width=True)
+
+        # 요약 통계
+        if len(supabase_trades) > 1:
+            first_record = supabase_trades.sort_values('timestamp').iloc[0]
+            last_record = supabase_trades.sort_values('timestamp').iloc[-1]
+
+            initial_asset = first_record['krw_balance'] + first_record['btc_balance'] * first_record['btc_krw_price']
+            final_asset = last_record['krw_balance'] + last_record['btc_balance'] * last_record['btc_krw_price']
+            total_profit = final_asset - initial_asset
+            profit_pct = (total_profit / initial_asset) * 100 if initial_asset > 0 else 0
+
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("시작 자산", f"{initial_asset:,.0f}원")
+            with col2:
+                st.metric("현재 자산", f"{final_asset:,.0f}원")
+            with col3:
+                st.metric("총 수익", f"{total_profit:+,.0f}원", delta=f"{profit_pct:+.2f}%")
+            with col4:
+                st.metric("거래 횟수", f"{len(supabase_trades)}회")
+    else:
+        st.info("해당 기간의 거래 기록이 없습니다.")
     
     # 거래 내역 테이블
     if not trades_df.empty:
@@ -468,23 +636,21 @@ def main():
         else:
             st.dataframe(trades_df.head(20), use_container_width=True)
     
-    # 통합 데이터 옵션
-    if data_source == "통합":
-        st.header('🔗 로컬 DB 연동')
-        
-        try:
-            conn = get_connection()
-            local_df = pd.read_sql_query("SELECT * FROM trades ORDER BY timestamp DESC LIMIT 10", conn)
-            conn.close()
-            
-            if not local_df.empty:
-                st.subheader("AI 트레이딩 기록 (최근 10건)")
-                st.dataframe(local_df, use_container_width=True)
-            else:
-                st.info("로컬 DB에 AI 트레이딩 기록이 없습니다.")
-                
-        except Exception as e:
-            st.warning(f"로컬 DB 연결 실패: {e}")
+    # AI 트레이딩 기록 (Supabase)
+    if data_source in ["Supabase", "통합"]:
+        st.header('AI 트레이딩 기록')
+
+        if not supabase_trades.empty:
+            # 표시할 컬럼
+            display_cols = ['timestamp', 'decision', 'percentage', 'reason', 'btc_balance', 'krw_balance']
+            available_cols = [col for col in display_cols if col in supabase_trades.columns]
+
+            display_df = supabase_trades[available_cols].head(10).copy()
+            display_df.columns = ['시간', '결정', '비율(%)', '이유', 'BTC 잔고', 'KRW 잔고'][:len(available_cols)]
+
+            st.dataframe(display_df, use_container_width=True)
+        else:
+            st.info("AI 트레이딩 기록이 없습니다.")
     
     # 요약 정보
     st.markdown("---")

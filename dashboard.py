@@ -273,11 +273,28 @@ def calculate_performance(trades_df, deposits_df, expenses_df, current_btc_price
 # 차트 함수들
 # ============================================================================
 
-def create_asset_chart(df, current_price):
-    """자산 증감 차트 (시작점 대비)"""
+def create_asset_chart(df, deposits_df, current_price):
+    """자산 증감 차트 (최초입금일 기준)"""
     if df.empty:
         return go.Figure()
     df_sorted = df.sort_values('timestamp').copy()
+
+    # 최초 입금일 찾기
+    first_deposit_date = None
+    if not deposits_df.empty:
+        deposit_only = deposits_df[deposits_df['type'] == 'deposit']
+        if not deposit_only.empty:
+            first_deposit_date = deposit_only['created_at'].min()
+
+    # 최초 입금일 이후 데이터만 필터링
+    if first_deposit_date is not None:
+        df_sorted = df_sorted[df_sorted['timestamp'] >= first_deposit_date]
+
+    if df_sorted.empty:
+        fig = go.Figure()
+        fig.add_annotation(text="데이터 없음", xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
+        fig.update_layout(margin=dict(l=0, r=0, t=30, b=0), height=280, template='plotly_dark')
+        return fig
 
     # 현재 가격으로 통일
     price = current_price or df_sorted['btc_krw_price'].iloc[-1]
@@ -308,16 +325,33 @@ def create_asset_chart(df, current_price):
     return fig
 
 def create_profit_chart(df, deposits_df, current_price):
-    """실질 수익 추이 차트"""
+    """실질 수익 추이 차트 (최초입금일 기준)"""
     if df.empty:
         return go.Figure()
 
     df_sorted = df.sort_values('timestamp').copy()
 
+    # 최초 입금일 찾기
+    first_deposit_date = None
+    if not deposits_df.empty:
+        deposit_only = deposits_df[deposits_df['type'] == 'deposit']
+        if not deposit_only.empty:
+            first_deposit_date = deposit_only['created_at'].min()
+
+    # 최초 입금일 이후 데이터만 필터링
+    if first_deposit_date is not None:
+        df_sorted = df_sorted[df_sorted['timestamp'] >= first_deposit_date]
+
+    if df_sorted.empty:
+        fig = go.Figure()
+        fig.add_annotation(text="데이터 없음", xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
+        fig.update_layout(margin=dict(l=0, r=0, t=30, b=0), height=280, template='plotly_dark')
+        return fig
+
     # 각 시점의 총 자산 계산 (현재 가격 기준)
     df_sorted['total'] = df_sorted['krw_balance'] + df_sorted['btc_balance'] * current_price
 
-    # 초기 자산 (첫 번째 기록)
+    # 초기 자산 (필터링 후 첫 번째 기록)
     initial_asset = df_sorted.iloc[0]['total']
 
     # 순입금 계산
@@ -507,16 +541,20 @@ def main():
 
         # 비용
         st.markdown("##### 💸 운영 비용")
-        with st.expander("비용 추가"):
+        st.caption("API 비용 자동 추적")
+        with st.expander("➕ 비용 수동 추가", expanded=False):
             exp_cat = st.selectbox("카테고리", ["api", "server", "other"], format_func=lambda x: {"api": "API", "server": "서버", "other": "기타"}[x], key="exp_cat")
             exp_name = st.text_input("항목명", key="exp_name")
-            exp_amt = st.number_input("금액", min_value=0, step=1000, key="exp_amt")
+            exp_amt = st.number_input("금액 (원)", min_value=0, step=1000, key="exp_amt")
             exp_period = st.selectbox("주기", ["monthly", "daily", "yearly", "one-time"], format_func=lambda x: {"monthly": "월", "daily": "일", "yearly": "연", "one-time": "1회"}[x], key="exp_period")
-            if st.button("추가", key="add_exp", use_container_width=True):
-                if exp_amt > 0 and exp_name and add_expense(exp_cat, exp_name, exp_amt, exp_period, ""):
-                    st.success("완료")
+            exp_memo = st.text_input("메모 (선택)", key="exp_memo")
+            if st.button("💾 비용 추가", key="add_exp", use_container_width=True):
+                if exp_amt > 0 and exp_name and add_expense(exp_cat, exp_name, exp_amt, exp_period, exp_memo):
+                    st.success("✅ 비용 추가 완료")
                     st.cache_data.clear()
                     st.rerun()
+                else:
+                    st.error("항목명과 금액을 입력하세요")
 
     # ===== 데이터 로드 =====
     trades_df = get_trades_from_supabase(days)
