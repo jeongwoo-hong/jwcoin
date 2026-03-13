@@ -42,7 +42,11 @@ def get_trades_from_supabase(days=30):
         if response.data:
             df = pd.DataFrame(response.data)
             # UTC -> KST 변환
-            df['timestamp'] = pd.to_datetime(df['timestamp']).dt.tz_localize('UTC').dt.tz_convert('Asia/Seoul')
+            ts = pd.to_datetime(df['timestamp'])
+            if ts.dt.tz is None:
+                df['timestamp'] = ts.dt.tz_localize('UTC').dt.tz_convert('Asia/Seoul')
+            else:
+                df['timestamp'] = ts.dt.tz_convert('Asia/Seoul')
             return df
         return pd.DataFrame()
     except Exception as e:
