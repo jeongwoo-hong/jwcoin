@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
 import pyupbit
 import os
@@ -15,45 +14,18 @@ KST = timezone(timedelta(hours=9))
 # 환경변수 로드
 load_dotenv()
 
-# Supabase 연결
+# ============================================================================
+# 데이터 조회 함수들
+# ============================================================================
+
 @st.cache_resource
 def get_supabase_client():
     url = os.getenv("SUPABASE_URL")
     key = os.getenv("SUPABASE_KEY")
     if not url or not key:
-        st.error("Supabase 설정이 없습니다.")
         return None
     return create_client(url, key)
 
-# Supabase에서 거래 기록 조회
-@st.cache_data(ttl=60)
-def get_trades_from_supabase(days=30):
-    supabase = get_supabase_client()
-    if not supabase:
-        return pd.DataFrame()
-
-    try:
-        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
-        response = supabase.table("trades") \
-            .select("*") \
-            .gte("timestamp", cutoff) \
-            .order("timestamp", desc=True) \
-            .execute()
-
-        if response.data:
-            df = pd.DataFrame(response.data)
-            ts = pd.to_datetime(df['timestamp'])
-            if ts.dt.tz is None:
-                df['timestamp'] = ts.dt.tz_localize('UTC').dt.tz_convert('Asia/Seoul')
-            else:
-                df['timestamp'] = ts.dt.tz_convert('Asia/Seoul')
-            return df
-        return pd.DataFrame()
-    except Exception as e:
-        st.error(f"거래 데이터 조회 실패: {e}")
-        return pd.DataFrame()
-
-# 업비트 API 연결
 @st.cache_resource
 def get_upbit_client():
     access = os.getenv("UPBIT_ACCESS_KEY")
@@ -65,189 +37,104 @@ def get_upbit_client():
     except:
         return None
 
-# 업비트에서 입출금 내역 조회
+@st.cache_data(ttl=60)
+def get_trades_from_supabase(days=30):
+    supabase = get_supabase_client()
+    if not supabase:
+        return pd.DataFrame()
+    try:
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        response = supabase.table("trades").select("*").gte("timestamp", cutoff).order("timestamp", desc=True).execute()
+        if response.data:
+            df = pd.DataFrame(response.data)
+            ts = pd.to_datetime(df['timestamp'])
+            df['timestamp'] = ts.dt.tz_convert('Asia/Seoul') if ts.dt.tz else ts.dt.tz_localize('UTC').dt.tz_convert('Asia/Seoul')
+            return df
+        return pd.DataFrame()
+    except:
+        return pd.DataFrame()
+
 @st.cache_data(ttl=300)
 def get_deposits_from_upbit():
     upbit = get_upbit_client()
     if not upbit:
         return pd.DataFrame()
-
     try:
-        all_records = []
-
-        # 입금 내역 조회 (KRW)
+        records = []
         deposits = upbit.get_deposits(currency="KRW")
         if deposits:
             for d in deposits:
-                if d.get('state') == 'accepted':  # 완료된 입금만
-                    all_records.append({
+                if d.get('state') == 'accepted':
+                    records.append({
                         'id': d.get('uuid', ''),
                         'created_at': pd.to_datetime(d.get('created_at')),
                         'type': 'deposit',
                         'amount': float(d.get('amount', 0)),
-                        'memo': f"업비트 입금 (txid: {d.get('txid', 'N/A')[:8]}...)" if d.get('txid') else "업비트 원화 입금"
+                        'memo': '업비트 원화 입금'
                     })
-
-        # 출금 내역 조회 (KRW)
         withdraws = upbit.get_withdraws(currency="KRW")
         if withdraws:
             for w in withdraws:
-                if w.get('state') == 'done':  # 완료된 출금만
-                    all_records.append({
+                if w.get('state') == 'done':
+                    records.append({
                         'id': w.get('uuid', ''),
                         'created_at': pd.to_datetime(w.get('created_at')),
                         'type': 'withdraw',
                         'amount': float(w.get('amount', 0)),
-                        'memo': "업비트 원화 출금"
+                        'memo': '업비트 원화 출금'
                     })
-
-        if all_records:
-            df = pd.DataFrame(all_records)
-            # KST로 변환
-            if df['created_at'].dt.tz is None:
-                df['created_at'] = df['created_at'].dt.tz_localize('UTC').dt.tz_convert('Asia/Seoul')
-            else:
-                df['created_at'] = df['created_at'].dt.tz_convert('Asia/Seoul')
-            df = df.sort_values('created_at', ascending=False)
-            return df
-
+        if records:
+            df = pd.DataFrame(records)
+            ts = df['created_at']
+            df['created_at'] = ts.dt.tz_convert('Asia/Seoul') if ts.dt.tz is not None else ts.dt.tz_localize('UTC').dt.tz_convert('Asia/Seoul')
+            return df.sort_values('created_at', ascending=False)
         return pd.DataFrame()
-    except Exception as e:
-        st.error(f"입출금 내역 조회 실패: {e}")
+    except:
         return pd.DataFrame()
 
-# Supabase에서 수동 입출금 기록 조회 (업비트 외 입출금용)
 @st.cache_data(ttl=60)
-def get_manual_deposits_from_supabase():
+def get_manual_deposits():
     supabase = get_supabase_client()
     if not supabase:
         return pd.DataFrame()
-
     try:
-        response = supabase.table("deposits") \
-            .select("*") \
-            .order("created_at", desc=True) \
-            .execute()
-
+        response = supabase.table("deposits").select("*").order("created_at", desc=True).execute()
         if response.data:
             df = pd.DataFrame(response.data)
             ts = pd.to_datetime(df['created_at'])
-            if ts.dt.tz is None:
-                df['created_at'] = ts.dt.tz_localize('UTC').dt.tz_convert('Asia/Seoul')
-            else:
-                df['created_at'] = ts.dt.tz_convert('Asia/Seoul')
+            df['created_at'] = ts.dt.tz_convert('Asia/Seoul') if ts.dt.tz else ts.dt.tz_localize('UTC').dt.tz_convert('Asia/Seoul')
             return df
         return pd.DataFrame()
-    except Exception as e:
+    except:
         return pd.DataFrame()
 
-# 전체 입출금 기록 (업비트 + 수동)
+@st.cache_data(ttl=60)
+def get_expenses():
+    supabase = get_supabase_client()
+    if not supabase:
+        return pd.DataFrame()
+    try:
+        response = supabase.table("expenses").select("*").order("created_at", desc=True).execute()
+        if response.data:
+            df = pd.DataFrame(response.data)
+            ts = pd.to_datetime(df['created_at'])
+            df['created_at'] = ts.dt.tz_convert('Asia/Seoul') if ts.dt.tz else ts.dt.tz_localize('UTC').dt.tz_convert('Asia/Seoul')
+            return df
+        return pd.DataFrame()
+    except:
+        return pd.DataFrame()
+
 def get_all_deposits():
-    upbit_deposits = get_deposits_from_upbit()
-    manual_deposits = get_manual_deposits_from_supabase()
-
-    if upbit_deposits.empty and manual_deposits.empty:
+    upbit = get_deposits_from_upbit()
+    manual = get_manual_deposits()
+    if upbit.empty and manual.empty:
         return pd.DataFrame()
-    elif upbit_deposits.empty:
-        return manual_deposits
-    elif manual_deposits.empty:
-        return upbit_deposits
-    else:
-        # 두 데이터프레임 합치기
-        combined = pd.concat([upbit_deposits, manual_deposits], ignore_index=True)
-        combined = combined.sort_values('created_at', ascending=False)
-        return combined
+    elif upbit.empty:
+        return manual
+    elif manual.empty:
+        return upbit
+    return pd.concat([upbit, manual], ignore_index=True).sort_values('created_at', ascending=False)
 
-# 비용 기록 조회
-@st.cache_data(ttl=60)
-def get_expenses_from_supabase():
-    supabase = get_supabase_client()
-    if not supabase:
-        return pd.DataFrame()
-
-    try:
-        response = supabase.table("expenses") \
-            .select("*") \
-            .order("created_at", desc=True) \
-            .execute()
-
-        if response.data:
-            df = pd.DataFrame(response.data)
-            ts = pd.to_datetime(df['created_at'])
-            if ts.dt.tz is None:
-                df['created_at'] = ts.dt.tz_localize('UTC').dt.tz_convert('Asia/Seoul')
-            else:
-                df['created_at'] = ts.dt.tz_convert('Asia/Seoul')
-            return df
-        return pd.DataFrame()
-    except Exception as e:
-        return pd.DataFrame()
-
-# 입출금 기록 추가
-def add_deposit(amount, deposit_type, memo):
-    supabase = get_supabase_client()
-    if not supabase:
-        return False
-
-    try:
-        data = {
-            "amount": float(amount),
-            "type": deposit_type,
-            "memo": memo
-        }
-        supabase.table("deposits").insert(data).execute()
-        return True
-    except Exception as e:
-        st.error(f"입출금 기록 추가 실패: {e}")
-        return False
-
-# 입출금 기록 삭제
-def delete_deposit(deposit_id):
-    supabase = get_supabase_client()
-    if not supabase:
-        return False
-
-    try:
-        supabase.table("deposits").delete().eq("id", deposit_id).execute()
-        return True
-    except Exception as e:
-        st.error(f"삭제 실패: {e}")
-        return False
-
-# 비용 기록 추가
-def add_expense(category, name, amount, period, memo):
-    supabase = get_supabase_client()
-    if not supabase:
-        return False
-
-    try:
-        data = {
-            "category": category,
-            "name": name,
-            "amount": float(amount),
-            "period": period,
-            "memo": memo
-        }
-        supabase.table("expenses").insert(data).execute()
-        return True
-    except Exception as e:
-        st.error(f"비용 기록 추가 실패: {e}")
-        return False
-
-# 비용 기록 삭제
-def delete_expense(expense_id):
-    supabase = get_supabase_client()
-    if not supabase:
-        return False
-
-    try:
-        supabase.table("expenses").delete().eq("id", expense_id).execute()
-        return True
-    except Exception as e:
-        st.error(f"삭제 실패: {e}")
-        return False
-
-# 현재 BTC 가격
 @st.cache_data(ttl=30)
 def get_current_btc_price():
     try:
@@ -255,321 +142,328 @@ def get_current_btc_price():
     except:
         return None
 
-# 번역 함수
+# ============================================================================
+# 데이터 조작 함수들
+# ============================================================================
+
+def add_deposit(amount, deposit_type, memo):
+    supabase = get_supabase_client()
+    if not supabase:
+        return False
+    try:
+        supabase.table("deposits").insert({"amount": float(amount), "type": deposit_type, "memo": memo}).execute()
+        return True
+    except:
+        return False
+
+def delete_deposit(deposit_id):
+    supabase = get_supabase_client()
+    if not supabase:
+        return False
+    try:
+        supabase.table("deposits").delete().eq("id", deposit_id).execute()
+        return True
+    except:
+        return False
+
+def add_expense(category, name, amount, period, memo):
+    supabase = get_supabase_client()
+    if not supabase:
+        return False
+    try:
+        supabase.table("expenses").insert({"category": category, "name": name, "amount": float(amount), "period": period, "memo": memo}).execute()
+        return True
+    except:
+        return False
+
+def delete_expense(expense_id):
+    supabase = get_supabase_client()
+    if not supabase:
+        return False
+    try:
+        supabase.table("expenses").delete().eq("id", expense_id).execute()
+        return True
+    except:
+        return False
+
 @st.cache_data(ttl=3600)
 def translate_to_korean(text):
     if not text or pd.isna(text):
         return ""
     try:
         translator = GoogleTranslator(source='en', target='ko')
-        if len(text) > 4500:
-            text = text[:4500]
-        return translator.translate(text)
+        return translator.translate(text[:4500] if len(text) > 4500 else text)
     except Exception as e:
         return f"번역 실패: {e}"
 
-# 숫자 포맷팅 (KRW: 천 단위 콤마, 1원 단위까지)
+# ============================================================================
+# 계산 함수들
+# ============================================================================
+
 def format_krw(value):
     if pd.isna(value) or value is None:
         return "0"
     try:
-        num = float(value)
-        return f"{num:,.0f}"
+        return f"{float(value):,.0f}"
     except:
         return str(value)
 
-# 월간 비용 계산
 def calculate_monthly_expenses(expenses_df, days=30):
     if expenses_df.empty:
         return 0, {}
-
     total = 0
-    by_category = {'api': 0, 'server': 0, 'other': 0}
-
+    by_cat = {'api': 0, 'server': 0, 'other': 0}
     for _, row in expenses_df.iterrows():
         amount = float(row['amount'])
         period = row.get('period', 'monthly')
-        category = row.get('category', 'other')
-
-        # 기간에 따른 월간 비용 환산
+        cat = row.get('category', 'other')
         if period == 'monthly':
-            monthly_amount = amount
+            monthly = amount
         elif period == 'daily':
-            monthly_amount = amount * 30
+            monthly = amount * 30
         elif period == 'yearly':
-            monthly_amount = amount / 12
-        else:  # one-time: 조회 기간에 비례
-            monthly_amount = amount * (30 / days)
-
-        total += monthly_amount
-        if category in by_category:
-            by_category[category] += monthly_amount
+            monthly = amount / 12
         else:
-            by_category['other'] += monthly_amount
+            monthly = amount * (30 / days)
+        total += monthly
+        by_cat[cat] = by_cat.get(cat, 0) + monthly
+    return total, by_cat
 
-    return total, by_category
-
-# 성과 계산 (입금액 및 비용 제외)
 def calculate_performance(trades_df, deposits_df, expenses_df, days=30):
     if trades_df.empty or len(trades_df) < 2:
         return {}
-
-    # 시간순 정렬
     df_sorted = trades_df.sort_values('timestamp')
-    first = df_sorted.iloc[0]
-    last = df_sorted.iloc[-1]
+    first, last = df_sorted.iloc[0], df_sorted.iloc[-1]
+    initial = first['krw_balance'] + first['btc_balance'] * first['btc_krw_price']
+    final = last['krw_balance'] + last['btc_balance'] * last['btc_krw_price']
 
-    # 초기/최종 자산
-    initial_asset = first['krw_balance'] + first['btc_balance'] * first['btc_krw_price']
-    final_asset = last['krw_balance'] + last['btc_balance'] * last['btc_krw_price']
+    total_dep = deposits_df[deposits_df['type'] == 'deposit']['amount'].sum() if not deposits_df.empty else 0
+    total_wd = deposits_df[deposits_df['type'] == 'withdraw']['amount'].sum() if not deposits_df.empty else 0
+    net_dep = total_dep - total_wd
 
-    # 총 입금/출금액 계산
-    total_deposits = 0
-    total_withdrawals = 0
-    if not deposits_df.empty:
-        total_deposits = deposits_df[deposits_df['type'] == 'deposit']['amount'].sum()
-        total_withdrawals = deposits_df[deposits_df['type'] == 'withdraw']['amount'].sum()
+    monthly_exp, exp_by_cat = calculate_monthly_expenses(expenses_df, days)
 
-    net_deposits = total_deposits - total_withdrawals
-
-    # 월간 비용 계산
-    monthly_expenses, expenses_by_category = calculate_monthly_expenses(expenses_df, days)
-
-    # 순수익 = 최종자산 - 초기자산 - 순입금액
-    gross_profit = final_asset - initial_asset
-    trading_profit = gross_profit - net_deposits  # 순수 투자 수익
-
-    # 실질 순수익 = 투자 수익 - 운영 비용
-    real_profit = trading_profit - monthly_expenses
-
-    # 순수익률 = 순수익 / (초기자산 + 순입금액)
-    invested = initial_asset + net_deposits
-    trading_profit_rate = (trading_profit / invested * 100) if invested > 0 else 0
-    real_profit_rate = (real_profit / invested * 100) if invested > 0 else 0
-
-    # 거래 통계
-    total_trades = len(trades_df)
-    buy_count = len(trades_df[trades_df['decision'] == 'buy'])
-    sell_count = len(trades_df[trades_df['decision'] == 'sell'])
-    hold_count = len(trades_df[trades_df['decision'] == 'hold'])
+    trading_profit = (final - initial) - net_dep
+    invested = initial + net_dep
+    trading_rate = (trading_profit / invested * 100) if invested > 0 else 0
+    real_profit = trading_profit - monthly_exp
+    real_rate = (real_profit / invested * 100) if invested > 0 else 0
 
     return {
-        'initial_asset': initial_asset,
-        'final_asset': final_asset,
-        'total_deposits': total_deposits,
-        'total_withdrawals': total_withdrawals,
-        'net_deposits': net_deposits,
-        'gross_profit': gross_profit,
-        'trading_profit': trading_profit,
-        'trading_profit_rate': trading_profit_rate,
-        'monthly_expenses': monthly_expenses,
-        'expenses_by_category': expenses_by_category,
-        'real_profit': real_profit,
-        'real_profit_rate': real_profit_rate,
-        'total_trades': total_trades,
-        'buy_count': buy_count,
-        'sell_count': sell_count,
-        'hold_count': hold_count
+        'initial': initial, 'final': final,
+        'total_deposits': total_dep, 'total_withdrawals': total_wd, 'net_deposits': net_dep,
+        'trading_profit': trading_profit, 'trading_rate': trading_rate,
+        'monthly_expenses': monthly_exp, 'expenses_by_cat': exp_by_cat,
+        'real_profit': real_profit, 'real_rate': real_rate,
+        'total_trades': len(trades_df),
+        'buy_count': len(trades_df[trades_df['decision'] == 'buy']),
+        'sell_count': len(trades_df[trades_df['decision'] == 'sell']),
+        'hold_count': len(trades_df[trades_df['decision'] == 'hold'])
     }
 
-# 자산 추이 차트
+# ============================================================================
+# 차트 함수들
+# ============================================================================
+
 def create_asset_chart(df):
     if df.empty:
         return go.Figure()
-
-    df_sorted = df.sort_values('timestamp')
-    df_sorted['total_asset'] = df_sorted['krw_balance'] + df_sorted['btc_balance'] * df_sorted['btc_krw_price']
-
+    df_sorted = df.sort_values('timestamp').copy()
+    df_sorted['total'] = df_sorted['krw_balance'] + df_sorted['btc_balance'] * df_sorted['btc_krw_price']
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=df_sorted['timestamp'],
-        y=df_sorted['total_asset'],
-        mode='lines+markers',
-        name='총 자산',
+        x=df_sorted['timestamp'], y=df_sorted['total'],
+        mode='lines', name='총 자산',
         line=dict(color='#00D4AA', width=2),
-        marker=dict(size=6)
+        fill='tozeroy', fillcolor='rgba(0, 212, 170, 0.1)'
     ))
-
     fig.update_layout(
-        title='총 자산 추이',
-        xaxis_title='시간',
-        yaxis_title='자산 (KRW)',
-        height=400,
-        template='plotly_dark'
+        margin=dict(l=0, r=0, t=30, b=0),
+        height=280, template='plotly_dark',
+        xaxis=dict(showgrid=False),
+        yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.1)'),
+        showlegend=False
     )
-
     return fig
 
-# 거래 결정 분포 차트
-def create_decision_chart(df):
-    if df.empty:
-        return go.Figure()
-
-    decision_counts = df['decision'].value_counts()
-    colors = {'buy': '#00D4AA', 'sell': '#FF6B6B', 'hold': '#4ECDC4'}
-
-    fig = go.Figure(data=[go.Pie(
-        labels=decision_counts.index,
-        values=decision_counts.values,
-        marker_colors=[colors.get(d, '#888') for d in decision_counts.index],
-        hole=0.4
-    )])
-
-    fig.update_layout(
-        title='거래 결정 분포',
-        height=300,
-        template='plotly_dark'
-    )
-
-    return fig
-
-# BTC 보유량 추이 차트
 def create_btc_chart(df):
     if df.empty:
         return go.Figure()
-
     df_sorted = df.sort_values('timestamp')
-
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=df_sorted['timestamp'],
-        y=df_sorted['btc_balance'],
-        mode='lines+markers',
-        name='BTC 보유량',
+        x=df_sorted['timestamp'], y=df_sorted['btc_balance'],
+        mode='lines', name='BTC',
         line=dict(color='#F7931A', width=2),
-        fill='tozeroy',
-        fillcolor='rgba(247, 147, 26, 0.2)'
+        fill='tozeroy', fillcolor='rgba(247, 147, 26, 0.1)'
     ))
-
     fig.update_layout(
-        title='BTC 보유량 추이',
-        xaxis_title='시간',
-        yaxis_title='BTC',
-        height=300,
-        template='plotly_dark'
+        margin=dict(l=0, r=0, t=30, b=0),
+        height=200, template='plotly_dark',
+        xaxis=dict(showgrid=False),
+        yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.1)'),
+        showlegend=False
     )
-
     return fig
 
-# 비용 분포 차트
-def create_expense_chart(expenses_by_category):
-    if not expenses_by_category or sum(expenses_by_category.values()) == 0:
+def create_decision_chart(df):
+    if df.empty:
         return go.Figure()
+    counts = df['decision'].value_counts()
+    colors = {'buy': '#00D4AA', 'sell': '#FF6B6B', 'hold': '#4ECDC4'}
+    labels = {'buy': '매수', 'sell': '매도', 'hold': '홀드'}
+    fig = go.Figure(data=[go.Pie(
+        labels=[labels.get(d, d) for d in counts.index],
+        values=counts.values,
+        marker_colors=[colors.get(d, '#888') for d in counts.index],
+        hole=0.6, textinfo='percent', textfont_size=12
+    )])
+    fig.update_layout(
+        margin=dict(l=0, r=0, t=0, b=0),
+        height=180, template='plotly_dark',
+        showlegend=True, legend=dict(orientation='h', y=-0.1)
+    )
+    return fig
 
-    labels = []
-    values = []
+def create_expense_chart(by_cat):
+    if not by_cat or sum(by_cat.values()) == 0:
+        fig = go.Figure()
+        fig.add_annotation(text="비용 없음", xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
+        fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=180, template='plotly_dark')
+        return fig
+    labels_map = {'api': 'API', 'server': '서버', 'other': '기타'}
     colors_map = {'api': '#FF6B6B', 'server': '#4ECDC4', 'other': '#95A5A6'}
-    colors = []
-
-    label_map = {'api': 'API 비용', 'server': '서버 비용', 'other': '기타'}
-
-    for cat, val in expenses_by_category.items():
+    labels, values, colors = [], [], []
+    for cat, val in by_cat.items():
         if val > 0:
-            labels.append(label_map.get(cat, cat))
+            labels.append(labels_map.get(cat, cat))
             values.append(val)
             colors.append(colors_map.get(cat, '#888'))
-
     fig = go.Figure(data=[go.Pie(
-        labels=labels,
-        values=values,
-        marker_colors=colors,
-        hole=0.4
+        labels=labels, values=values,
+        marker_colors=colors, hole=0.6,
+        textinfo='percent', textfont_size=12
     )])
-
     fig.update_layout(
-        title='월간 비용 분포',
-        height=300,
-        template='plotly_dark'
+        margin=dict(l=0, r=0, t=0, b=0),
+        height=180, template='plotly_dark',
+        showlegend=True, legend=dict(orientation='h', y=-0.1)
     )
-
     return fig
 
-# 메인
-def main():
-    st.set_page_config(
-        page_title="JWCoin Trading Dashboard",
-        page_icon="📈",
-        layout="wide",
-        initial_sidebar_state="expanded"
-    )
+# ============================================================================
+# 메인 앱
+# ============================================================================
 
-    # 커스텀 CSS
+def main():
+    st.set_page_config(page_title="JWCoin Dashboard", page_icon="📈", layout="wide")
+
+    # CSS
     st.markdown("""
     <style>
-    .main { background-color: #0E1117; }
-    .stMetric { background-color: #1E2130; padding: 15px; border-radius: 10px; }
-    .stMetric label { color: #888; }
-    .stMetric [data-testid="stMetricValue"] { color: #fff; font-size: 24px; }
-    .profit { color: #00D4AA; }
-    .loss { color: #FF6B6B; }
+    /* 전체 배경 */
+    .main { background-color: #0a0a0f; }
+    .block-container { padding: 1rem 2rem; }
+
+    /* 제목 스타일 */
+    h1 { font-size: 1.5rem !important; font-weight: 600 !important; margin-bottom: 0.5rem !important; }
+    h2 { font-size: 1.1rem !important; font-weight: 500 !important; color: #888 !important; margin: 1rem 0 0.5rem 0 !important; }
+    h3 { font-size: 1rem !important; font-weight: 500 !important; }
+
+    /* 메트릭 카드 */
+    [data-testid="stMetric"] {
+        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+        border: 1px solid #2a2a4a;
+        border-radius: 12px;
+        padding: 1rem;
+    }
+    [data-testid="stMetricLabel"] { font-size: 0.75rem; color: #888; }
+    [data-testid="stMetricValue"] { font-size: 1.2rem; font-weight: 600; }
+    [data-testid="stMetricDelta"] { font-size: 0.8rem; }
+
+    /* 탭 스타일 */
+    .stTabs [data-baseweb="tab-list"] { gap: 8px; }
+    .stTabs [data-baseweb="tab"] {
+        background-color: #1a1a2e;
+        border-radius: 8px;
+        padding: 8px 16px;
+        font-size: 0.85rem;
+    }
+
+    /* 데이터프레임 */
+    .stDataFrame { border-radius: 8px; overflow: hidden; }
+
+    /* 사이드바 */
+    [data-testid="stSidebar"] { background-color: #0f0f1a; }
+    [data-testid="stSidebar"] .stMarkdown h1 { font-size: 1rem !important; }
+
+    /* 버튼 */
+    .stButton > button {
+        border-radius: 8px;
+        font-size: 0.85rem;
+        padding: 0.4rem 1rem;
+    }
+
+    /* 구분선 */
+    hr { border-color: #2a2a4a; margin: 1rem 0; }
+
+    /* Expander */
+    .streamlit-expanderHeader { font-size: 0.85rem; }
     </style>
     """, unsafe_allow_html=True)
 
-    # 사이드바
-    st.sidebar.title("⚙️ 설정")
-    days = st.sidebar.slider("조회 기간 (일)", 1, 90, 30)
+    # ===== 사이드바 =====
+    with st.sidebar:
+        st.title("⚙️ 설정")
+        days = st.slider("조회 기간", 1, 90, 30, format="%d일")
 
-    if st.sidebar.button("🔄 새로고침"):
-        st.cache_data.clear()
-        st.rerun()
+        if st.button("🔄 새로고침", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
 
-    # 입출금 관리 섹션
-    st.sidebar.markdown("---")
-    st.sidebar.title("💵 입출금 관리")
-    st.sidebar.caption("업비트 입출금은 자동 조회됩니다")
+        st.divider()
 
-    with st.sidebar.expander("➕ 수동 입출금 추가 (업비트 외)"):
-        deposit_type = st.selectbox("유형", ["deposit", "withdraw"], format_func=lambda x: "입금" if x == "deposit" else "출금")
-        dep_amount = st.number_input("금액 (KRW)", min_value=0, step=10000, key="dep_amount")
-        dep_memo = st.text_input("메모 (예: 타 거래소 이체)", key="dep_memo")
-
-        if st.button("추가", type="primary", key="add_deposit"):
-            if dep_amount > 0:
-                if add_deposit(dep_amount, deposit_type, dep_memo):
-                    st.success("추가 완료!")
+        # 입출금
+        st.markdown("##### 💵 입출금")
+        st.caption("업비트는 자동 조회")
+        with st.expander("수동 추가"):
+            dep_type = st.selectbox("유형", ["deposit", "withdraw"], format_func=lambda x: "입금" if x == "deposit" else "출금", key="dep_type")
+            dep_amt = st.number_input("금액", min_value=0, step=10000, key="dep_amt")
+            dep_memo = st.text_input("메모", key="dep_memo")
+            if st.button("추가", key="add_dep", use_container_width=True):
+                if dep_amt > 0 and add_deposit(dep_amt, dep_type, dep_memo):
+                    st.success("완료")
                     st.cache_data.clear()
                     st.rerun()
-            else:
-                st.warning("금액을 입력하세요")
 
-    # 비용 관리 섹션
-    st.sidebar.markdown("---")
-    st.sidebar.title("💸 운영 비용 관리")
+        st.divider()
 
-    with st.sidebar.expander("➕ 비용 기록 추가"):
-        exp_category = st.selectbox(
-            "카테고리",
-            ["api", "server", "other"],
-            format_func=lambda x: {"api": "API 비용", "server": "서버 비용", "other": "기타"}[x]
-        )
-        exp_name = st.text_input("항목명 (예: OpenAI, AWS EC2)", key="exp_name")
-        exp_amount = st.number_input("금액 (KRW)", min_value=0, step=1000, key="exp_amount")
-        exp_period = st.selectbox(
-            "결제 주기",
-            ["monthly", "daily", "yearly", "one-time"],
-            format_func=lambda x: {"monthly": "월간", "daily": "일간", "yearly": "연간", "one-time": "일회성"}[x]
-        )
-        exp_memo = st.text_input("메모 (선택)", key="exp_memo")
-
-        if st.button("추가", type="primary", key="add_expense"):
-            if exp_amount > 0 and exp_name:
-                if add_expense(exp_category, exp_name, exp_amount, exp_period, exp_memo):
-                    st.success("추가 완료!")
+        # 비용
+        st.markdown("##### 💸 운영 비용")
+        with st.expander("비용 추가"):
+            exp_cat = st.selectbox("카테고리", ["api", "server", "other"], format_func=lambda x: {"api": "API", "server": "서버", "other": "기타"}[x], key="exp_cat")
+            exp_name = st.text_input("항목명", key="exp_name")
+            exp_amt = st.number_input("금액", min_value=0, step=1000, key="exp_amt")
+            exp_period = st.selectbox("주기", ["monthly", "daily", "yearly", "one-time"], format_func=lambda x: {"monthly": "월", "daily": "일", "yearly": "연", "one-time": "1회"}[x], key="exp_period")
+            if st.button("추가", key="add_exp", use_container_width=True):
+                if exp_amt > 0 and exp_name and add_expense(exp_cat, exp_name, exp_amt, exp_period, ""):
+                    st.success("완료")
                     st.cache_data.clear()
                     st.rerun()
-            else:
-                st.warning("항목명과 금액을 입력하세요")
 
-    # 헤더
-    st.title("📈 JWCoin Trading Dashboard")
-    st.markdown("AI 자동매매 성과 모니터링")
+    # ===== 데이터 로드 =====
+    trades_df = get_trades_from_supabase(days)
+    deposits_df = get_all_deposits()
+    expenses_df = get_expenses()
+    btc_price = get_current_btc_price()
 
-    # 데이터 로드
-    with st.spinner("데이터 로딩 중..."):
-        trades_df = get_trades_from_supabase(days)
-        deposits_df = get_all_deposits()  # 업비트 API + 수동 입력 통합
-        expenses_df = get_expenses_from_supabase()
-        current_price = get_current_btc_price()
+    # ===== 헤더 =====
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.title("📈 JWCoin Dashboard")
+    with col2:
+        if btc_price:
+            st.metric("BTC", f"₩{format_krw(btc_price)}")
 
     if trades_df.empty:
         st.warning("거래 기록이 없습니다.")
@@ -577,212 +471,121 @@ def main():
 
     # 성과 계산
     perf = calculate_performance(trades_df, deposits_df, expenses_df, days)
-
-    # 현재 상태
-    st.header("💰 현재 상태")
-
     latest = trades_df.iloc[0]
-    current_btc_value = latest['btc_balance'] * (current_price or latest['btc_krw_price'])
-    current_total = latest['krw_balance'] + current_btc_value
+    btc_val = latest['btc_balance'] * (btc_price or latest['btc_krw_price'])
+    total_asset = latest['krw_balance'] + btc_val
 
-    col1, col2, col3, col4 = st.columns(4)
+    # ===== 현재 자산 =====
+    st.markdown("## 💰 현재 자산")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("BTC 보유", f"{latest['btc_balance']:.6f}")
+    c2.metric("BTC 가치", f"₩{format_krw(btc_val)}")
+    c3.metric("KRW 보유", f"₩{format_krw(latest['krw_balance'])}")
+    c4.metric("총 자산", f"₩{format_krw(total_asset)}")
 
-    with col1:
-        st.metric("보유 BTC", f"{latest['btc_balance']:.6f} BTC")
-    with col2:
-        st.metric("BTC 가치", f"{format_krw(current_btc_value)} KRW")
-    with col3:
-        st.metric("보유 KRW", f"{format_krw(latest['krw_balance'])} KRW")
-    with col4:
-        st.metric("총 자산", f"{format_krw(current_total)} KRW")
+    # ===== 투자 성과 =====
+    st.markdown("## 📊 투자 성과")
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("입금", f"₩{format_krw(perf.get('total_deposits', 0))}")
+    c2.metric("출금", f"₩{format_krw(perf.get('total_withdrawals', 0))}")
+    c3.metric("투자수익", f"₩{format_krw(perf.get('trading_profit', 0))}", f"{perf.get('trading_rate', 0):+.2f}%")
+    c4.metric("운영비용", f"₩{format_krw(perf.get('monthly_expenses', 0))}/월")
+    c5.metric("실질수익", f"₩{format_krw(perf.get('real_profit', 0))}", f"{perf.get('real_rate', 0):+.2f}%")
 
-    # 투자 성과
-    st.header("📊 투자 성과")
+    # ===== 차트 =====
+    st.markdown("## 📈 차트")
 
-    col1, col2, col3 = st.columns(3)
+    # 상단: 자산 추이
+    st.plotly_chart(create_asset_chart(trades_df), use_container_width=True, config={'displayModeBar': False})
 
-    with col1:
-        st.metric(
-            "총 입금",
-            f"{format_krw(perf.get('total_deposits', 0))} KRW"
-        )
-    with col2:
-        st.metric(
-            "총 출금",
-            f"{format_krw(perf.get('total_withdrawals', 0))} KRW"
-        )
-    with col3:
-        st.metric(
-            "순 입금",
-            f"{format_krw(perf.get('net_deposits', 0))} KRW"
-        )
+    # 하단: 3개 차트
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.caption("BTC 보유량")
+        st.plotly_chart(create_btc_chart(trades_df), use_container_width=True, config={'displayModeBar': False})
+    with c2:
+        st.caption("거래 결정")
+        st.plotly_chart(create_decision_chart(trades_df), use_container_width=True, config={'displayModeBar': False})
+    with c3:
+        st.caption("비용 분포")
+        st.plotly_chart(create_expense_chart(perf.get('expenses_by_cat', {})), use_container_width=True, config={'displayModeBar': False})
 
-    col1, col2, col3, col4 = st.columns(4)
-
-    with col1:
-        trading_profit = perf.get('trading_profit', 0)
-        st.metric(
-            "투자 수익",
-            f"{format_krw(trading_profit)} KRW",
-            delta=f"{perf.get('trading_profit_rate', 0):+.2f}%",
-            help="입출금 제외한 순수 투자 수익"
-        )
-    with col2:
-        monthly_exp = perf.get('monthly_expenses', 0)
-        st.metric(
-            "월간 운영비용",
-            f"{format_krw(monthly_exp)} KRW",
-            delta=f"-{format_krw(monthly_exp)}" if monthly_exp > 0 else None,
-            delta_color="inverse",
-            help="API, 서버 등 운영 비용"
-        )
-    with col3:
-        real_profit = perf.get('real_profit', 0)
-        st.metric(
-            "실질 순수익",
-            f"{format_krw(real_profit)} KRW",
-            delta=f"{perf.get('real_profit_rate', 0):+.2f}%",
-            help="투자 수익 - 운영 비용"
-        )
-    with col4:
-        st.metric(
-            "총 거래",
-            f"{perf.get('total_trades', 0)}회",
-            help=f"매수: {perf.get('buy_count', 0)} / 매도: {perf.get('sell_count', 0)} / 홀드: {perf.get('hold_count', 0)}"
-        )
-
-    # 차트
-    st.header("📈 차트")
-
-    col1, col2 = st.columns([2, 1])
-
-    with col1:
-        st.plotly_chart(create_asset_chart(trades_df), use_container_width=True)
-    with col2:
-        st.plotly_chart(create_decision_chart(trades_df), use_container_width=True)
-
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        st.plotly_chart(create_btc_chart(trades_df), use_container_width=True)
-    with col2:
-        expenses_by_cat = perf.get('expenses_by_category', {})
-        st.plotly_chart(create_expense_chart(expenses_by_cat), use_container_width=True)
-
-    # 탭으로 기록 분리
-    tab1, tab2, tab3 = st.tabs(["📜 거래 기록", "💵 입출금 기록", "💸 비용 기록"])
+    # ===== 기록 탭 =====
+    st.markdown("## 📋 기록")
+    tab1, tab2, tab3 = st.tabs(["거래", "입출금", "비용"])
 
     with tab1:
-        display_df = trades_df[['timestamp', 'decision', 'percentage', 'btc_balance', 'krw_balance', 'btc_krw_price', 'reason']].head(20).copy()
-        display_df.columns = ['시간', '결정', '비율(%)', 'BTC 잔고', 'KRW 잔고', 'BTC 가격', '이유']
-        display_df['시간'] = display_df['시간'].dt.strftime('%Y-%m-%d %H:%M')
-        display_df['결정'] = display_df['결정'].map({'buy': '🟢 매수', 'sell': '🔴 매도', 'hold': '⚪ 홀드'})
-        display_df['BTC 잔고'] = display_df['BTC 잔고'].apply(lambda x: f"{x:.6f}")
-        display_df['KRW 잔고'] = display_df['KRW 잔고'].apply(lambda x: f"{x:,.0f}")
-        display_df['BTC 가격'] = display_df['BTC 가격'].apply(lambda x: f"{x:,.0f}")
-        display_df['이유'] = display_df['이유'].apply(lambda x: x[:100] + '...' if len(str(x)) > 100 else x)
+        if not trades_df.empty:
+            display = trades_df[['timestamp', 'decision', 'percentage', 'btc_balance', 'krw_balance', 'btc_krw_price', 'reason']].head(15).copy()
+            display['timestamp'] = display['timestamp'].dt.strftime('%m/%d %H:%M')
+            display['decision'] = display['decision'].map({'buy': '🟢매수', 'sell': '🔴매도', 'hold': '⚪홀드'})
+            display['btc_balance'] = display['btc_balance'].apply(lambda x: f"{x:.4f}")
+            display['krw_balance'] = display['krw_balance'].apply(lambda x: f"{x:,.0f}")
+            display['btc_krw_price'] = display['btc_krw_price'].apply(lambda x: f"{x:,.0f}")
+            display['reason'] = display['reason'].apply(lambda x: str(x)[:50] + '...' if len(str(x)) > 50 else x)
+            display.columns = ['시간', '결정', '%', 'BTC', 'KRW', 'BTC가격', '이유']
+            st.dataframe(display, use_container_width=True, hide_index=True, height=400)
 
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
-
-        # 거래 이유 번역 기능
-        st.markdown("#### 🌐 거래 이유 번역")
-        trade_idx = st.selectbox(
-            "번역할 거래 선택",
-            range(min(20, len(trades_df))),
-            format_func=lambda i: f"{trades_df.iloc[i]['timestamp'].strftime('%Y-%m-%d %H:%M')} - {trades_df.iloc[i]['decision']}"
-        )
-
-        if st.button("🔤 한국어로 번역", key="translate_reason"):
-            selected_reason = trades_df.iloc[trade_idx]['reason']
-            with st.spinner("번역 중..."):
-                translated = translate_to_korean(selected_reason)
-            st.info(f"**원문:** {selected_reason}")
-            st.success(f"**번역:** {translated}")
+            # 번역
+            with st.expander("🌐 번역"):
+                idx = st.selectbox("거래 선택", range(min(15, len(trades_df))), format_func=lambda i: f"{trades_df.iloc[i]['timestamp'].strftime('%m/%d %H:%M')} - {trades_df.iloc[i]['decision']}")
+                if st.button("번역", key="tr_reason"):
+                    with st.spinner("번역 중..."):
+                        st.success(translate_to_korean(trades_df.iloc[idx]['reason']))
 
     with tab2:
-        st.caption("🔄 업비트 입출금은 API에서 자동으로 가져옵니다")
-
         if not deposits_df.empty:
-            dep_display = deposits_df.copy()
-            dep_display['created_at'] = dep_display['created_at'].dt.strftime('%Y-%m-%d %H:%M')
-            dep_display['type'] = dep_display['type'].map({'deposit': '🟢 입금', 'withdraw': '🔴 출금'})
-            dep_display['amount'] = dep_display['amount'].apply(lambda x: f"{x:,.0f} KRW")
+            dep = deposits_df.copy()
+            dep['created_at'] = dep['created_at'].dt.strftime('%m/%d %H:%M')
+            dep['type'] = dep['type'].map({'deposit': '🟢입금', 'withdraw': '🔴출금'})
+            dep['amount'] = dep['amount'].apply(lambda x: f"₩{x:,.0f}")
+            dep['source'] = dep['memo'].apply(lambda x: '업비트' if '업비트' in str(x) else '수동')
+            st.dataframe(dep[['created_at', 'type', 'amount', 'source', 'memo']], use_container_width=True, hide_index=True, column_config={'created_at': '시간', 'type': '유형', 'amount': '금액', 'source': '출처', 'memo': '메모'})
 
-            # 출처 표시 (업비트 vs 수동)
-            dep_display['source'] = dep_display['memo'].apply(
-                lambda x: '🔵 업비트' if '업비트' in str(x) else '⚪ 수동'
-            )
-
-            display_cols = ['created_at', 'type', 'amount', 'source', 'memo']
-            dep_display = dep_display[display_cols]
-            dep_display.columns = ['시간', '유형', '금액', '출처', '메모']
-
-            st.dataframe(dep_display, use_container_width=True, hide_index=True)
-
-            # 수동 입력 삭제 기능
-            manual_deposits = get_manual_deposits_from_supabase()
-            if not manual_deposits.empty:
-                st.markdown("---")
-                st.markdown("**수동 입력 삭제**")
-                col1, col2 = st.columns([3, 1])
-                with col1:
-                    del_dep_id = st.number_input("삭제할 ID (수동 입력만)", min_value=1, step=1, key="del_dep_id")
-                with col2:
-                    if st.button("🗑️ 삭제", type="secondary", key="del_deposit"):
-                        if delete_deposit(del_dep_id):
-                            st.success("삭제 완료!")
+            manual = get_manual_deposits()
+            if not manual.empty:
+                with st.expander("수동 입력 삭제"):
+                    del_id = st.number_input("삭제 ID", min_value=1, step=1, key="del_dep")
+                    if st.button("삭제", key="del_dep_btn"):
+                        if delete_deposit(del_id):
                             st.cache_data.clear()
                             st.rerun()
         else:
-            st.info("입출금 기록이 없습니다.")
+            st.info("입출금 기록 없음")
 
     with tab3:
         if not expenses_df.empty:
-            exp_display = expenses_df.copy()
-            exp_display['created_at'] = exp_display['created_at'].dt.strftime('%Y-%m-%d %H:%M')
-            exp_display['category'] = exp_display['category'].map({'api': '🔴 API', 'server': '🟢 서버', 'other': '⚪ 기타'})
-            exp_display['period'] = exp_display['period'].map({'monthly': '월간', 'daily': '일간', 'yearly': '연간', 'one-time': '일회성'})
-            exp_display['amount'] = exp_display['amount'].apply(lambda x: f"{x:,.0f} KRW")
-            exp_display = exp_display[['id', 'created_at', 'category', 'name', 'amount', 'period', 'memo']]
-            exp_display.columns = ['ID', '등록일', '카테고리', '항목', '금액', '주기', '메모']
+            exp = expenses_df.copy()
+            exp['created_at'] = exp['created_at'].dt.strftime('%m/%d %H:%M')
+            exp['category'] = exp['category'].map({'api': '🔴API', 'server': '🟢서버', 'other': '⚪기타'})
+            exp['period'] = exp['period'].map({'monthly': '월', 'daily': '일', 'yearly': '연', 'one-time': '1회'})
+            exp['amount'] = exp['amount'].apply(lambda x: f"₩{x:,.0f}")
+            st.dataframe(exp[['id', 'created_at', 'category', 'name', 'amount', 'period']], use_container_width=True, hide_index=True, column_config={'id': 'ID', 'created_at': '등록', 'category': '분류', 'name': '항목', 'amount': '금액', 'period': '주기'})
 
-            st.dataframe(exp_display, use_container_width=True, hide_index=True)
-
-            # 삭제 기능
-            st.markdown("---")
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                del_exp_id = st.number_input("삭제할 ID", min_value=1, step=1, key="del_exp_id")
-            with col2:
-                if st.button("🗑️ 삭제", type="secondary", key="del_expense"):
-                    if delete_expense(del_exp_id):
-                        st.success("삭제 완료!")
+            with st.expander("비용 삭제"):
+                del_id = st.number_input("삭제 ID", min_value=1, step=1, key="del_exp")
+                if st.button("삭제", key="del_exp_btn"):
+                    if delete_expense(del_id):
                         st.cache_data.clear()
                         st.rerun()
         else:
-            st.info("비용 기록이 없습니다. 사이드바에서 추가하세요.")
+            st.info("비용 기록 없음")
 
-    # AI 분석
-    if 'reflection' in trades_df.columns:
-        st.header("🤖 AI 분석")
-        latest_reflection = trades_df.iloc[0].get('reflection', '')
-        if latest_reflection:
-            st.markdown(f"**원문:**")
-            st.markdown(f"> {latest_reflection}")
+    # ===== AI 분석 =====
+    if 'reflection' in trades_df.columns and trades_df.iloc[0].get('reflection'):
+        st.markdown("## 🤖 AI 분석")
+        reflection = trades_df.iloc[0]['reflection']
+        st.caption(reflection[:200] + '...' if len(reflection) > 200 else reflection)
+        if st.button("전체 보기 & 번역", key="tr_ref"):
+            st.info(reflection)
+            with st.spinner("번역 중..."):
+                st.success(translate_to_korean(reflection))
 
-            if st.button("🔤 한국어로 번역", key="translate_reflection"):
-                with st.spinner("번역 중..."):
-                    translated_reflection = translate_to_korean(latest_reflection)
-                st.markdown(f"**번역:**")
-                st.success(translated_reflection)
-
-    # 푸터
-    st.markdown("---")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.caption(f"현재 BTC 가격: {current_price:,.0f} KRW" if current_price else "BTC 가격 조회 실패")
-    with col2:
-        kst_now = datetime.now(KST)
-        st.caption(f"마지막 업데이트: {kst_now.strftime('%Y-%m-%d %H:%M:%S')} (KST)")
+    # ===== 푸터 =====
+    st.divider()
+    c1, c2 = st.columns(2)
+    c1.caption(f"거래: {perf.get('total_trades', 0)}회 (매수 {perf.get('buy_count', 0)} / 매도 {perf.get('sell_count', 0)} / 홀드 {perf.get('hold_count', 0)})")
+    c2.caption(f"업데이트: {datetime.now(KST).strftime('%Y-%m-%d %H:%M')} KST")
 
 if __name__ == "__main__":
     main()
