@@ -294,6 +294,63 @@ def create_asset_chart(df):
     )
     return fig
 
+def create_profit_chart(df, deposits_df, current_price):
+    """실질 수익 추이 차트"""
+    if df.empty:
+        return go.Figure()
+
+    df_sorted = df.sort_values('timestamp').copy()
+
+    # 각 시점의 총 자산 계산 (현재 가격 기준)
+    df_sorted['total'] = df_sorted['krw_balance'] + df_sorted['btc_balance'] * current_price
+
+    # 초기 자산 (첫 번째 기록)
+    initial_asset = df_sorted.iloc[0]['total']
+
+    # 순입금 계산
+    net_deposits = 0
+    if not deposits_df.empty:
+        total_dep = deposits_df[deposits_df['type'] == 'deposit']['amount'].sum()
+        total_wd = deposits_df[deposits_df['type'] == 'withdraw']['amount'].sum()
+        net_deposits = total_dep - total_wd
+
+    # 실질 수익 = 현재 자산 - 초기 자산 - 순입금
+    df_sorted['profit'] = df_sorted['total'] - initial_asset - net_deposits
+
+    # 수익률 계산
+    invested = initial_asset + net_deposits
+    df_sorted['profit_rate'] = (df_sorted['profit'] / invested * 100) if invested > 0 else 0
+
+    fig = go.Figure()
+
+    # 수익/손실 색상 구분
+    colors = ['#00D4AA' if p >= 0 else '#FF6B6B' for p in df_sorted['profit']]
+
+    fig.add_trace(go.Scatter(
+        x=df_sorted['timestamp'],
+        y=df_sorted['profit'],
+        mode='lines+markers',
+        name='실질 수익',
+        line=dict(color='#00D4AA', width=2),
+        marker=dict(size=4, color=colors),
+        fill='tozeroy',
+        fillcolor='rgba(0, 212, 170, 0.1)'
+    ))
+
+    # 0선 추가
+    fig.add_hline(y=0, line_dash="dash", line_color="rgba(255,255,255,0.3)")
+
+    fig.update_layout(
+        margin=dict(l=0, r=0, t=30, b=0),
+        height=280,
+        template='plotly_dark',
+        xaxis=dict(showgrid=False),
+        yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.1)'),
+        showlegend=False
+    )
+
+    return fig
+
 def create_btc_chart(df):
     if df.empty:
         return go.Figure()
@@ -492,8 +549,14 @@ def main():
     # ===== 차트 =====
     st.markdown("## 📈 차트")
 
-    # 상단: 자산 추이
-    st.plotly_chart(create_asset_chart(trades_df), use_container_width=True, config={'displayModeBar': False})
+    # 상단: 자산 추이 & 실질 수익 (2열)
+    c1, c2 = st.columns(2)
+    with c1:
+        st.caption("총 자산 추이")
+        st.plotly_chart(create_asset_chart(trades_df), use_container_width=True, config={'displayModeBar': False})
+    with c2:
+        st.caption("실질 수익 추이 (입출금/비용 제외)")
+        st.plotly_chart(create_profit_chart(trades_df, deposits_df, btc_price), use_container_width=True, config={'displayModeBar': False})
 
     # 하단: 3개 차트
     c1, c2, c3 = st.columns(3)
