@@ -53,9 +53,72 @@ def get_trades_from_supabase(days=30):
         st.error(f"거래 데이터 조회 실패: {e}")
         return pd.DataFrame()
 
-# 입출금 기록 조회
+# 업비트 API 연결
+@st.cache_resource
+def get_upbit_client():
+    access = os.getenv("UPBIT_ACCESS_KEY")
+    secret = os.getenv("UPBIT_SECRET_KEY")
+    if not access or not secret:
+        return None
+    try:
+        return pyupbit.Upbit(access, secret)
+    except:
+        return None
+
+# 업비트에서 입출금 내역 조회
+@st.cache_data(ttl=300)
+def get_deposits_from_upbit():
+    upbit = get_upbit_client()
+    if not upbit:
+        return pd.DataFrame()
+
+    try:
+        all_records = []
+
+        # 입금 내역 조회 (KRW)
+        deposits = upbit.get_deposits(currency="KRW")
+        if deposits:
+            for d in deposits:
+                if d.get('state') == 'accepted':  # 완료된 입금만
+                    all_records.append({
+                        'id': d.get('uuid', ''),
+                        'created_at': pd.to_datetime(d.get('created_at')),
+                        'type': 'deposit',
+                        'amount': float(d.get('amount', 0)),
+                        'memo': f"업비트 입금 (txid: {d.get('txid', 'N/A')[:8]}...)" if d.get('txid') else "업비트 원화 입금"
+                    })
+
+        # 출금 내역 조회 (KRW)
+        withdraws = upbit.get_withdraws(currency="KRW")
+        if withdraws:
+            for w in withdraws:
+                if w.get('state') == 'done':  # 완료된 출금만
+                    all_records.append({
+                        'id': w.get('uuid', ''),
+                        'created_at': pd.to_datetime(w.get('created_at')),
+                        'type': 'withdraw',
+                        'amount': float(w.get('amount', 0)),
+                        'memo': "업비트 원화 출금"
+                    })
+
+        if all_records:
+            df = pd.DataFrame(all_records)
+            # KST로 변환
+            if df['created_at'].dt.tz is None:
+                df['created_at'] = df['created_at'].dt.tz_localize('UTC').dt.tz_convert('Asia/Seoul')
+            else:
+                df['created_at'] = df['created_at'].dt.tz_convert('Asia/Seoul')
+            df = df.sort_values('created_at', ascending=False)
+            return df
+
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"입출금 내역 조회 실패: {e}")
+        return pd.DataFrame()
+
+# Supabase에서 수동 입출금 기록 조회 (업비트 외 입출금용)
 @st.cache_data(ttl=60)
-def get_deposits_from_supabase():
+def get_manual_deposits_from_supabase():
     supabase = get_supabase_client()
     if not supabase:
         return pd.DataFrame()
@@ -77,6 +140,23 @@ def get_deposits_from_supabase():
         return pd.DataFrame()
     except Exception as e:
         return pd.DataFrame()
+
+# 전체 입출금 기록 (업비트 + 수동)
+def get_all_deposits():
+    upbit_deposits = get_deposits_from_upbit()
+    manual_deposits = get_manual_deposits_from_supabase()
+
+    if upbit_deposits.empty and manual_deposits.empty:
+        return pd.DataFrame()
+    elif upbit_deposits.empty:
+        return manual_deposits
+    elif manual_deposits.empty:
+        return upbit_deposits
+    else:
+        # 두 데이터프레임 합치기
+        combined = pd.concat([upbit_deposits, manual_deposits], ignore_index=True)
+        combined = combined.sort_values('created_at', ascending=False)
+        return combined
 
 # 비용 기록 조회
 @st.cache_data(ttl=60)
@@ -436,11 +516,12 @@ def main():
     # 입출금 관리 섹션
     st.sidebar.markdown("---")
     st.sidebar.title("💵 입출금 관리")
+    st.sidebar.caption("업비트 입출금은 자동 조회됩니다")
 
-    with st.sidebar.expander("➕ 입출금 기록 추가"):
+    with st.sidebar.expander("➕ 수동 입출금 추가 (업비트 외)"):
         deposit_type = st.selectbox("유형", ["deposit", "withdraw"], format_func=lambda x: "입금" if x == "deposit" else "출금")
         dep_amount = st.number_input("금액 (KRW)", min_value=0, step=10000, key="dep_amount")
-        dep_memo = st.text_input("메모 (선택)", key="dep_memo")
+        dep_memo = st.text_input("메모 (예: 타 거래소 이체)", key="dep_memo")
 
         if st.button("추가", type="primary", key="add_deposit"):
             if dep_amount > 0:
@@ -486,7 +567,7 @@ def main():
     # 데이터 로드
     with st.spinner("데이터 로딩 중..."):
         trades_df = get_trades_from_supabase(days)
-        deposits_df = get_deposits_from_supabase()
+        deposits_df = get_all_deposits()  # 업비트 API + 수동 입력 통합
         expenses_df = get_expenses_from_supabase()
         current_price = get_current_btc_price()
 
@@ -618,29 +699,41 @@ def main():
             st.success(f"**번역:** {translated}")
 
     with tab2:
+        st.caption("🔄 업비트 입출금은 API에서 자동으로 가져옵니다")
+
         if not deposits_df.empty:
             dep_display = deposits_df.copy()
             dep_display['created_at'] = dep_display['created_at'].dt.strftime('%Y-%m-%d %H:%M')
             dep_display['type'] = dep_display['type'].map({'deposit': '🟢 입금', 'withdraw': '🔴 출금'})
             dep_display['amount'] = dep_display['amount'].apply(lambda x: f"{x:,.0f} KRW")
-            dep_display = dep_display[['id', 'created_at', 'type', 'amount', 'memo']]
-            dep_display.columns = ['ID', '시간', '유형', '금액', '메모']
+
+            # 출처 표시 (업비트 vs 수동)
+            dep_display['source'] = dep_display['memo'].apply(
+                lambda x: '🔵 업비트' if '업비트' in str(x) else '⚪ 수동'
+            )
+
+            display_cols = ['created_at', 'type', 'amount', 'source', 'memo']
+            dep_display = dep_display[display_cols]
+            dep_display.columns = ['시간', '유형', '금액', '출처', '메모']
 
             st.dataframe(dep_display, use_container_width=True, hide_index=True)
 
-            # 삭제 기능
-            st.markdown("---")
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                del_dep_id = st.number_input("삭제할 ID", min_value=1, step=1, key="del_dep_id")
-            with col2:
-                if st.button("🗑️ 삭제", type="secondary", key="del_deposit"):
-                    if delete_deposit(del_dep_id):
-                        st.success("삭제 완료!")
-                        st.cache_data.clear()
-                        st.rerun()
+            # 수동 입력 삭제 기능
+            manual_deposits = get_manual_deposits_from_supabase()
+            if not manual_deposits.empty:
+                st.markdown("---")
+                st.markdown("**수동 입력 삭제**")
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    del_dep_id = st.number_input("삭제할 ID (수동 입력만)", min_value=1, step=1, key="del_dep_id")
+                with col2:
+                    if st.button("🗑️ 삭제", type="secondary", key="del_deposit"):
+                        if delete_deposit(del_dep_id):
+                            st.success("삭제 완료!")
+                            st.cache_data.clear()
+                            st.rerun()
         else:
-            st.info("입출금 기록이 없습니다. 사이드바에서 추가하세요.")
+            st.info("입출금 기록이 없습니다.")
 
     with tab3:
         if not expenses_df.empty:
