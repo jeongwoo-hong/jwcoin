@@ -467,10 +467,12 @@ def main():
     # CSS (테마는 .streamlit/config.toml에서 설정)
     st.markdown("""
     <style>
-    /* 헤더 숨김 */
+    /* 헤더 & 사이드바 숨김 */
     header[data-testid="stHeader"] { display: none !important; }
     #MainMenu { visibility: hidden; }
     footer { visibility: hidden; }
+    [data-testid="stSidebar"] { display: none !important; }
+    [data-testid="collapsedControl"] { display: none !important; }
 
     /* 레이아웃 */
     .block-container { padding: 1rem 2rem; max-width: 100%; }
@@ -507,57 +509,64 @@ def main():
     </style>
     """, unsafe_allow_html=True)
 
-    # ===== 사이드바 =====
-    with st.sidebar:
-        st.title("⚙️ 설정")
-        days = st.slider("조회 기간", 1, 90, 30, format="%d일")
+    # ===== 설정 패널 (메인 화면 상단) =====
+    with st.expander("⚙️ 설정", expanded=False):
+        col1, col2, col3, col4 = st.columns(4)
 
-        st.divider()
-        st.markdown("##### 📅 차트 시작일")
-        chart_start_date = st.date_input(
-            "시작일 선택",
-            value=datetime.now(KST) - timedelta(days=7),
-            max_value=datetime.now(KST).date(),
-            help="이 날짜 이후의 데이터만 차트에 표시됩니다"
-        )
+        with col1:
+            days = st.slider("조회 기간", 1, 90, 30, format="%d일")
 
-        if st.button("🔄 새로고침", use_container_width=True):
-            st.cache_data.clear()
-            st.rerun()
+        with col2:
+            chart_start_date = st.date_input(
+                "차트 시작일",
+                value=datetime.now(KST) - timedelta(days=7),
+                max_value=datetime.now(KST).date()
+            )
 
-        st.divider()
+        with col3:
+            if st.button("🔄 새로고침", use_container_width=True):
+                st.cache_data.clear()
+                st.rerun()
 
-        # 입출금
-        st.markdown("##### 💵 입출금")
-        st.caption("업비트는 자동 조회")
-        with st.expander("수동 추가"):
-            dep_type = st.selectbox("유형", ["deposit", "withdraw"], format_func=lambda x: "입금" if x == "deposit" else "출금", key="dep_type")
-            dep_amt = st.number_input("금액", min_value=0, step=10000, key="dep_amt")
-            dep_memo = st.text_input("메모", key="dep_memo")
-            if st.button("추가", key="add_dep", use_container_width=True):
-                if dep_amt > 0 and add_deposit(dep_amt, dep_type, dep_memo):
-                    st.success("완료")
-                    st.cache_data.clear()
-                    st.rerun()
+        with col4:
+            st.empty()
 
         st.divider()
 
-        # 비용
-        st.markdown("##### 💸 운영 비용")
-        st.caption("API 비용 자동 추적")
-        with st.expander("➕ 비용 수동 추가", expanded=False):
-            exp_cat = st.selectbox("카테고리", ["api", "server", "other"], format_func=lambda x: {"api": "API", "server": "서버", "other": "기타"}[x], key="exp_cat")
-            exp_name = st.text_input("항목명", key="exp_name")
-            exp_amt = st.number_input("금액 (원)", min_value=0, step=1000, key="exp_amt")
-            exp_period = st.selectbox("주기", ["monthly", "daily", "yearly", "one-time"], format_func=lambda x: {"monthly": "월", "daily": "일", "yearly": "연", "one-time": "1회"}[x], key="exp_period")
-            exp_memo = st.text_input("메모 (선택)", key="exp_memo")
-            if st.button("💾 비용 추가", key="add_exp", use_container_width=True):
-                if exp_amt > 0 and exp_name and add_expense(exp_cat, exp_name, exp_amt, exp_period, exp_memo):
-                    st.success("✅ 비용 추가 완료")
-                    st.cache_data.clear()
-                    st.rerun()
-                else:
-                    st.error("항목명과 금액을 입력하세요")
+        # 입출금 & 비용 추가
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.markdown("**💵 입출금 수동 추가**")
+            dep_col1, dep_col2 = st.columns(2)
+            with dep_col1:
+                dep_type = st.selectbox("유형", ["deposit", "withdraw"], format_func=lambda x: "입금" if x == "deposit" else "출금", key="dep_type")
+                dep_amt = st.number_input("금액", min_value=0, step=10000, key="dep_amt")
+            with dep_col2:
+                dep_memo = st.text_input("메모", key="dep_memo")
+                if st.button("입출금 추가", key="add_dep", use_container_width=True):
+                    if dep_amt > 0 and add_deposit(dep_amt, dep_type, dep_memo):
+                        st.success("완료")
+                        st.cache_data.clear()
+                        st.rerun()
+
+        with col2:
+            st.markdown("**💸 비용 수동 추가**")
+            exp_col1, exp_col2 = st.columns(2)
+            with exp_col1:
+                exp_cat = st.selectbox("카테고리", ["api", "server", "other"], format_func=lambda x: {"api": "API", "server": "서버", "other": "기타"}[x], key="exp_cat")
+                exp_name = st.text_input("항목명", key="exp_name")
+                exp_amt = st.number_input("금액 (원)", min_value=0, step=1000, key="exp_amt")
+            with exp_col2:
+                exp_period = st.selectbox("주기", ["monthly", "daily", "yearly", "one-time"], format_func=lambda x: {"monthly": "월", "daily": "일", "yearly": "연", "one-time": "1회"}[x], key="exp_period")
+                exp_memo = st.text_input("메모 (선택)", key="exp_memo")
+                if st.button("비용 추가", key="add_exp", use_container_width=True):
+                    if exp_amt > 0 and exp_name and add_expense(exp_cat, exp_name, exp_amt, exp_period, exp_memo):
+                        st.success("완료")
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.error("항목명과 금액을 입력하세요")
 
     # ===== 데이터 로드 =====
     trades_df = get_trades_from_supabase(days)
