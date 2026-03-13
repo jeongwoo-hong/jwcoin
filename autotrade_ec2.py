@@ -431,12 +431,10 @@ if __name__ == "__main__":
         finally:
             trading_in_progress = False
 
-    # 스케줄 설정: 매일 한국시간 9시, 15시, 21시 실행 (UTC 00:00, 06:00, 12:00)
-    schedule.every().day.at("00:00").do(job)
-    schedule.every().day.at("06:00").do(job)
-    schedule.every().day.at("12:00").do(job)
+    # 스케줄 설정: 매시간 실행
+    schedule.every().hour.at(":00").do(job)
 
-    logger.info("Trading bot started. Scheduled at 00:00, 06:00, 12:00 UTC (KST 09:00, 15:00, 21:00)")
+    logger.info("Trading bot started. Scheduled to run every hour at :00")
     logger.info("Waiting for scheduled time...")
 
     # 시작 시 한번 실행 (테스트용 - 필요시 주석 해제)
