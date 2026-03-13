@@ -5,8 +5,11 @@ import plotly.graph_objects as go
 import pyupbit
 import os
 from dotenv import load_dotenv
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from supabase import create_client, Client
+
+# 한국 시간대 (UTC+9)
+KST = timezone(timedelta(hours=9))
 
 # 환경변수 로드
 load_dotenv()
@@ -38,7 +41,8 @@ def get_trades_from_supabase(days=30):
 
         if response.data:
             df = pd.DataFrame(response.data)
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            # UTC -> KST 변환
+            df['timestamp'] = pd.to_datetime(df['timestamp']).dt.tz_localize('UTC').dt.tz_convert('Asia/Seoul')
             return df
         return pd.DataFrame()
     except Exception as e:
@@ -291,7 +295,7 @@ def main():
 
     display_df = trades_df[['timestamp', 'decision', 'percentage', 'btc_balance', 'krw_balance', 'btc_krw_price', 'reason']].head(20).copy()
     display_df.columns = ['시간', '결정', '비율(%)', 'BTC 잔고', 'KRW 잔고', 'BTC 가격', '이유']
-    display_df['시간'] = display_df['시간'].dt.strftime('%Y-%m-%d %H:%M')
+    display_df['시간'] = display_df['시간'].dt.strftime('%Y-%m-%d %H:%M (KST)')
     display_df['결정'] = display_df['결정'].map({'buy': '🟢 매수', 'sell': '🔴 매도', 'hold': '⚪ 홀드'})
     display_df['BTC 잔고'] = display_df['BTC 잔고'].apply(lambda x: f"{x:.6f}")
     display_df['KRW 잔고'] = display_df['KRW 잔고'].apply(lambda x: f"{x:,.0f}")
@@ -313,7 +317,8 @@ def main():
     with col1:
         st.caption(f"현재 BTC 가격: {current_price:,.0f} KRW" if current_price else "BTC 가격 조회 실패")
     with col2:
-        st.caption(f"마지막 업데이트: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        kst_now = datetime.now(KST)
+        st.caption(f"마지막 업데이트: {kst_now.strftime('%Y-%m-%d %H:%M:%S')} (KST)")
 
 if __name__ == "__main__":
     main()
