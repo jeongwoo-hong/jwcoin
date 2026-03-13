@@ -76,7 +76,31 @@ def get_deposits_from_supabase():
             return df
         return pd.DataFrame()
     except Exception as e:
-        # 테이블이 없을 수 있음
+        return pd.DataFrame()
+
+# 비용 기록 조회
+@st.cache_data(ttl=60)
+def get_expenses_from_supabase():
+    supabase = get_supabase_client()
+    if not supabase:
+        return pd.DataFrame()
+
+    try:
+        response = supabase.table("expenses") \
+            .select("*") \
+            .order("created_at", desc=True) \
+            .execute()
+
+        if response.data:
+            df = pd.DataFrame(response.data)
+            ts = pd.to_datetime(df['created_at'])
+            if ts.dt.tz is None:
+                df['created_at'] = ts.dt.tz_localize('UTC').dt.tz_convert('Asia/Seoul')
+            else:
+                df['created_at'] = ts.dt.tz_convert('Asia/Seoul')
+            return df
+        return pd.DataFrame()
+    except Exception as e:
         return pd.DataFrame()
 
 # 입출금 기록 추가
@@ -110,6 +134,39 @@ def delete_deposit(deposit_id):
         st.error(f"삭제 실패: {e}")
         return False
 
+# 비용 기록 추가
+def add_expense(category, name, amount, period, memo):
+    supabase = get_supabase_client()
+    if not supabase:
+        return False
+
+    try:
+        data = {
+            "category": category,
+            "name": name,
+            "amount": float(amount),
+            "period": period,
+            "memo": memo
+        }
+        supabase.table("expenses").insert(data).execute()
+        return True
+    except Exception as e:
+        st.error(f"비용 기록 추가 실패: {e}")
+        return False
+
+# 비용 기록 삭제
+def delete_expense(expense_id):
+    supabase = get_supabase_client()
+    if not supabase:
+        return False
+
+    try:
+        supabase.table("expenses").delete().eq("id", expense_id).execute()
+        return True
+    except Exception as e:
+        st.error(f"삭제 실패: {e}")
+        return False
+
 # 현재 BTC 가격
 @st.cache_data(ttl=30)
 def get_current_btc_price():
@@ -125,7 +182,6 @@ def translate_to_korean(text):
         return ""
     try:
         translator = GoogleTranslator(source='en', target='ko')
-        # 긴 텍스트는 분할 번역
         if len(text) > 4500:
             text = text[:4500]
         return translator.translate(text)
@@ -142,8 +198,39 @@ def format_krw(value):
     except:
         return str(value)
 
-# 성과 계산 (입금액 제외)
-def calculate_performance(trades_df, deposits_df):
+# 월간 비용 계산
+def calculate_monthly_expenses(expenses_df, days=30):
+    if expenses_df.empty:
+        return 0, {}
+
+    total = 0
+    by_category = {'api': 0, 'server': 0, 'other': 0}
+
+    for _, row in expenses_df.iterrows():
+        amount = float(row['amount'])
+        period = row.get('period', 'monthly')
+        category = row.get('category', 'other')
+
+        # 기간에 따른 월간 비용 환산
+        if period == 'monthly':
+            monthly_amount = amount
+        elif period == 'daily':
+            monthly_amount = amount * 30
+        elif period == 'yearly':
+            monthly_amount = amount / 12
+        else:  # one-time: 조회 기간에 비례
+            monthly_amount = amount * (30 / days)
+
+        total += monthly_amount
+        if category in by_category:
+            by_category[category] += monthly_amount
+        else:
+            by_category['other'] += monthly_amount
+
+    return total, by_category
+
+# 성과 계산 (입금액 및 비용 제외)
+def calculate_performance(trades_df, deposits_df, expenses_df, days=30):
     if trades_df.empty or len(trades_df) < 2:
         return {}
 
@@ -165,13 +252,20 @@ def calculate_performance(trades_df, deposits_df):
 
     net_deposits = total_deposits - total_withdrawals
 
+    # 월간 비용 계산
+    monthly_expenses, expenses_by_category = calculate_monthly_expenses(expenses_df, days)
+
     # 순수익 = 최종자산 - 초기자산 - 순입금액
     gross_profit = final_asset - initial_asset
-    net_profit = gross_profit - net_deposits
+    trading_profit = gross_profit - net_deposits  # 순수 투자 수익
+
+    # 실질 순수익 = 투자 수익 - 운영 비용
+    real_profit = trading_profit - monthly_expenses
 
     # 순수익률 = 순수익 / (초기자산 + 순입금액)
     invested = initial_asset + net_deposits
-    net_profit_rate = (net_profit / invested * 100) if invested > 0 else 0
+    trading_profit_rate = (trading_profit / invested * 100) if invested > 0 else 0
+    real_profit_rate = (real_profit / invested * 100) if invested > 0 else 0
 
     # 거래 통계
     total_trades = len(trades_df)
@@ -186,8 +280,12 @@ def calculate_performance(trades_df, deposits_df):
         'total_withdrawals': total_withdrawals,
         'net_deposits': net_deposits,
         'gross_profit': gross_profit,
-        'net_profit': net_profit,
-        'net_profit_rate': net_profit_rate,
+        'trading_profit': trading_profit,
+        'trading_profit_rate': trading_profit_rate,
+        'monthly_expenses': monthly_expenses,
+        'expenses_by_category': expenses_by_category,
+        'real_profit': real_profit,
+        'real_profit_rate': real_profit_rate,
         'total_trades': total_trades,
         'buy_count': buy_count,
         'sell_count': sell_count,
@@ -273,6 +371,39 @@ def create_btc_chart(df):
 
     return fig
 
+# 비용 분포 차트
+def create_expense_chart(expenses_by_category):
+    if not expenses_by_category or sum(expenses_by_category.values()) == 0:
+        return go.Figure()
+
+    labels = []
+    values = []
+    colors_map = {'api': '#FF6B6B', 'server': '#4ECDC4', 'other': '#95A5A6'}
+    colors = []
+
+    label_map = {'api': 'API 비용', 'server': '서버 비용', 'other': '기타'}
+
+    for cat, val in expenses_by_category.items():
+        if val > 0:
+            labels.append(label_map.get(cat, cat))
+            values.append(val)
+            colors.append(colors_map.get(cat, '#888'))
+
+    fig = go.Figure(data=[go.Pie(
+        labels=labels,
+        values=values,
+        marker_colors=colors,
+        hole=0.4
+    )])
+
+    fig.update_layout(
+        title='월간 비용 분포',
+        height=300,
+        template='plotly_dark'
+    )
+
+    return fig
+
 # 메인
 def main():
     st.set_page_config(
@@ -289,6 +420,8 @@ def main():
     .stMetric { background-color: #1E2130; padding: 15px; border-radius: 10px; }
     .stMetric label { color: #888; }
     .stMetric [data-testid="stMetricValue"] { color: #fff; font-size: 24px; }
+    .profit { color: #00D4AA; }
+    .loss { color: #FF6B6B; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -306,17 +439,45 @@ def main():
 
     with st.sidebar.expander("➕ 입출금 기록 추가"):
         deposit_type = st.selectbox("유형", ["deposit", "withdraw"], format_func=lambda x: "입금" if x == "deposit" else "출금")
-        amount = st.number_input("금액 (KRW)", min_value=0, step=10000)
-        memo = st.text_input("메모 (선택)")
+        dep_amount = st.number_input("금액 (KRW)", min_value=0, step=10000, key="dep_amount")
+        dep_memo = st.text_input("메모 (선택)", key="dep_memo")
 
-        if st.button("추가", type="primary"):
-            if amount > 0:
-                if add_deposit(amount, deposit_type, memo):
+        if st.button("추가", type="primary", key="add_deposit"):
+            if dep_amount > 0:
+                if add_deposit(dep_amount, deposit_type, dep_memo):
                     st.success("추가 완료!")
                     st.cache_data.clear()
                     st.rerun()
             else:
                 st.warning("금액을 입력하세요")
+
+    # 비용 관리 섹션
+    st.sidebar.markdown("---")
+    st.sidebar.title("💸 운영 비용 관리")
+
+    with st.sidebar.expander("➕ 비용 기록 추가"):
+        exp_category = st.selectbox(
+            "카테고리",
+            ["api", "server", "other"],
+            format_func=lambda x: {"api": "API 비용", "server": "서버 비용", "other": "기타"}[x]
+        )
+        exp_name = st.text_input("항목명 (예: OpenAI, AWS EC2)", key="exp_name")
+        exp_amount = st.number_input("금액 (KRW)", min_value=0, step=1000, key="exp_amount")
+        exp_period = st.selectbox(
+            "결제 주기",
+            ["monthly", "daily", "yearly", "one-time"],
+            format_func=lambda x: {"monthly": "월간", "daily": "일간", "yearly": "연간", "one-time": "일회성"}[x]
+        )
+        exp_memo = st.text_input("메모 (선택)", key="exp_memo")
+
+        if st.button("추가", type="primary", key="add_expense"):
+            if exp_amount > 0 and exp_name:
+                if add_expense(exp_category, exp_name, exp_amount, exp_period, exp_memo):
+                    st.success("추가 완료!")
+                    st.cache_data.clear()
+                    st.rerun()
+            else:
+                st.warning("항목명과 금액을 입력하세요")
 
     # 헤더
     st.title("📈 JWCoin Trading Dashboard")
@@ -326,6 +487,7 @@ def main():
     with st.spinner("데이터 로딩 중..."):
         trades_df = get_trades_from_supabase(days)
         deposits_df = get_deposits_from_supabase()
+        expenses_df = get_expenses_from_supabase()
         current_price = get_current_btc_price()
 
     if trades_df.empty:
@@ -333,7 +495,7 @@ def main():
         st.stop()
 
     # 성과 계산
-    perf = calculate_performance(trades_df, deposits_df)
+    perf = calculate_performance(trades_df, deposits_df, expenses_df, days)
 
     # 현재 상태
     st.header("💰 현재 상태")
@@ -353,10 +515,10 @@ def main():
     with col4:
         st.metric("총 자산", f"{format_krw(current_total)} KRW")
 
-    # 성과 지표 (입금 제외)
-    st.header("📊 투자 성과 (입출금 제외)")
+    # 투자 성과
+    st.header("📊 투자 성과")
 
-    col1, col2, col3, col4, col5 = st.columns(5)
+    col1, col2, col3 = st.columns(3)
 
     with col1:
         st.metric(
@@ -373,14 +535,35 @@ def main():
             "순 입금",
             f"{format_krw(perf.get('net_deposits', 0))} KRW"
         )
-    with col4:
-        net_profit = perf.get('net_profit', 0)
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        trading_profit = perf.get('trading_profit', 0)
         st.metric(
-            "순수익 (투자수익)",
-            f"{format_krw(net_profit)} KRW",
-            delta=f"{perf.get('net_profit_rate', 0):+.2f}%"
+            "투자 수익",
+            f"{format_krw(trading_profit)} KRW",
+            delta=f"{perf.get('trading_profit_rate', 0):+.2f}%",
+            help="입출금 제외한 순수 투자 수익"
         )
-    with col5:
+    with col2:
+        monthly_exp = perf.get('monthly_expenses', 0)
+        st.metric(
+            "월간 운영비용",
+            f"{format_krw(monthly_exp)} KRW",
+            delta=f"-{format_krw(monthly_exp)}" if monthly_exp > 0 else None,
+            delta_color="inverse",
+            help="API, 서버 등 운영 비용"
+        )
+    with col3:
+        real_profit = perf.get('real_profit', 0)
+        st.metric(
+            "실질 순수익",
+            f"{format_krw(real_profit)} KRW",
+            delta=f"{perf.get('real_profit_rate', 0):+.2f}%",
+            help="투자 수익 - 운영 비용"
+        )
+    with col4:
         st.metric(
             "총 거래",
             f"{perf.get('total_trades', 0)}회",
@@ -397,10 +580,15 @@ def main():
     with col2:
         st.plotly_chart(create_decision_chart(trades_df), use_container_width=True)
 
-    st.plotly_chart(create_btc_chart(trades_df), use_container_width=True)
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        st.plotly_chart(create_btc_chart(trades_df), use_container_width=True)
+    with col2:
+        expenses_by_cat = perf.get('expenses_by_category', {})
+        st.plotly_chart(create_expense_chart(expenses_by_cat), use_container_width=True)
 
-    # 탭으로 거래 기록과 입출금 기록 분리
-    tab1, tab2 = st.tabs(["📜 거래 기록", "💵 입출금 기록"])
+    # 탭으로 기록 분리
+    tab1, tab2, tab3 = st.tabs(["📜 거래 기록", "💵 입출금 기록", "💸 비용 기록"])
 
     with tab1:
         display_df = trades_df[['timestamp', 'decision', 'percentage', 'btc_balance', 'krw_balance', 'btc_krw_price', 'reason']].head(20).copy()
@@ -444,15 +632,41 @@ def main():
             st.markdown("---")
             col1, col2 = st.columns([3, 1])
             with col1:
-                delete_id = st.number_input("삭제할 ID", min_value=1, step=1)
+                del_dep_id = st.number_input("삭제할 ID", min_value=1, step=1, key="del_dep_id")
             with col2:
-                if st.button("🗑️ 삭제", type="secondary"):
-                    if delete_deposit(delete_id):
+                if st.button("🗑️ 삭제", type="secondary", key="del_deposit"):
+                    if delete_deposit(del_dep_id):
                         st.success("삭제 완료!")
                         st.cache_data.clear()
                         st.rerun()
         else:
             st.info("입출금 기록이 없습니다. 사이드바에서 추가하세요.")
+
+    with tab3:
+        if not expenses_df.empty:
+            exp_display = expenses_df.copy()
+            exp_display['created_at'] = exp_display['created_at'].dt.strftime('%Y-%m-%d %H:%M')
+            exp_display['category'] = exp_display['category'].map({'api': '🔴 API', 'server': '🟢 서버', 'other': '⚪ 기타'})
+            exp_display['period'] = exp_display['period'].map({'monthly': '월간', 'daily': '일간', 'yearly': '연간', 'one-time': '일회성'})
+            exp_display['amount'] = exp_display['amount'].apply(lambda x: f"{x:,.0f} KRW")
+            exp_display = exp_display[['id', 'created_at', 'category', 'name', 'amount', 'period', 'memo']]
+            exp_display.columns = ['ID', '등록일', '카테고리', '항목', '금액', '주기', '메모']
+
+            st.dataframe(exp_display, use_container_width=True, hide_index=True)
+
+            # 삭제 기능
+            st.markdown("---")
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                del_exp_id = st.number_input("삭제할 ID", min_value=1, step=1, key="del_exp_id")
+            with col2:
+                if st.button("🗑️ 삭제", type="secondary", key="del_expense"):
+                    if delete_expense(del_exp_id):
+                        st.success("삭제 완료!")
+                        st.cache_data.clear()
+                        st.rerun()
+        else:
+            st.info("비용 기록이 없습니다. 사이드바에서 추가하세요.")
 
     # AI 분석
     if 'reflection' in trades_df.columns:
