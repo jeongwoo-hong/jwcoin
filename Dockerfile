@@ -2,11 +2,13 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-RUN pip install flask
+COPY requirements_dashboard.txt .
+RUN pip install --no-cache-dir -r requirements_dashboard.txt
 
-COPY test_app.py .
+COPY dashboard.py .
+COPY .streamlit .streamlit
 
 ENV PORT=8080
 EXPOSE 8080
 
-CMD ["python", "test_app.py"]
+CMD ["/bin/bash", "-c", "streamlit run dashboard.py --server.port ${PORT} --server.address 0.0.0.0 --server.headless true"]
