@@ -183,7 +183,7 @@ Type=simple
 User=ec2-user
 WorkingDirectory=/home/ec2-user/jwcoin
 Environment=PATH=/home/ec2-user/jwcoin/venv/bin
-ExecStart=/home/ec2-user/jwcoin/venv/bin/python autotrade.py
+ExecStart=/home/ec2-user/jwcoin/venv/bin/python autotrade_ec2.py
 Restart=always
 RestartSec=10
 
