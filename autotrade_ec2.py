@@ -10,7 +10,7 @@ import time
 import requests
 import logging
 from pydantic import BaseModel
-import sqlite3
+from supabase import create_client, Client
 from datetime import datetime, timedelta
 import schedule
 
@@ -32,47 +32,55 @@ if not access or not secret:
     raise ValueError("Missing API keys. Please check your .env file.")
 upbit = pyupbit.Upbit(access, secret)
 
+# Supabase 클라이언트 초기화
+supabase_url = os.getenv("SUPABASE_URL")
+supabase_key = os.getenv("SUPABASE_KEY")
+if not supabase_url or not supabase_key:
+    logger.error("Supabase credentials not found. Please check your .env file.")
+    raise ValueError("Missing Supabase credentials.")
+supabase: Client = create_client(supabase_url, supabase_key)
+logger.info("Supabase connected successfully")
+
 # OpenAI 구조화된 출력 체크용 클래스
 class TradingDecision(BaseModel):
     decision: str
     percentage: int
     reason: str
 
-# SQLite 데이터베이스 초기화 함수
-def init_db():
-    conn = sqlite3.connect('bitcoin_trades.db')
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS trades
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  timestamp TEXT,
-                  decision TEXT,
-                  percentage INTEGER,
-                  reason TEXT,
-                  btc_balance REAL,
-                  krw_balance REAL,
-                  btc_avg_buy_price REAL,
-                  btc_krw_price REAL,
-                  reflection TEXT)''')
-    conn.commit()
-    return conn
+# 거래 기록을 Supabase에 저장
+def log_trade(decision, percentage, reason, btc_balance, krw_balance, btc_avg_buy_price, btc_krw_price, reflection=''):
+    try:
+        data = {
+            "decision": decision,
+            "percentage": percentage,
+            "reason": reason,
+            "btc_balance": float(btc_balance),
+            "krw_balance": float(krw_balance),
+            "btc_avg_buy_price": float(btc_avg_buy_price),
+            "btc_krw_price": float(btc_krw_price),
+            "reflection": reflection
+        }
+        supabase.table("trades").insert(data).execute()
+        logger.info(f"Trade logged to Supabase: {decision}")
+    except Exception as e:
+        logger.error(f"Error logging trade to Supabase: {e}")
 
-# 거래 기록을 DB에 저장
-def log_trade(conn, decision, percentage, reason, btc_balance, krw_balance, btc_avg_buy_price, btc_krw_price, reflection=''):
-    c = conn.cursor()
-    timestamp = datetime.now().isoformat()
-    c.execute("""INSERT INTO trades
-                 (timestamp, decision, percentage, reason, btc_balance, krw_balance, btc_avg_buy_price, btc_krw_price, reflection)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-              (timestamp, decision, percentage, reason, btc_balance, krw_balance, btc_avg_buy_price, btc_krw_price, reflection))
-    conn.commit()
+# 최근 투자 기록 조회 (Supabase)
+def get_recent_trades(days=7):
+    try:
+        seven_days_ago = (datetime.now() - timedelta(days=days)).isoformat()
+        response = supabase.table("trades") \
+            .select("*") \
+            .gte("timestamp", seven_days_ago) \
+            .order("timestamp", desc=True) \
+            .execute()
 
-# 최근 투자 기록 조회
-def get_recent_trades(conn, days=7):
-    c = conn.cursor()
-    seven_days_ago = (datetime.now() - timedelta(days=days)).isoformat()
-    c.execute("SELECT * FROM trades WHERE timestamp > ? ORDER BY timestamp DESC", (seven_days_ago,))
-    columns = [column[0] for column in c.description]
-    return pd.DataFrame.from_records(data=c.fetchall(), columns=columns)
+        if response.data:
+            return pd.DataFrame(response.data)
+        return pd.DataFrame()
+    except Exception as e:
+        logger.error(f"Error fetching recent trades: {e}")
+        return pd.DataFrame()
 
 # 퍼포먼스 계산
 def calculate_performance(trades_df):
@@ -210,7 +218,6 @@ def ai_trading():
     global upbit
     logger.info("=== AI Trading Started ===")
 
-    ### 데이터 가져오기
     # 1. 현재 투자 상태 조회
     all_balances = upbit.get_balances()
     filtered_balances = [balance for balance in all_balances if balance['currency'] in ['BTC', 'KRW']]
@@ -243,165 +250,170 @@ def ai_trading():
         strategy_content = TRADING_STRATEGY
         logger.warning("strategy.txt not found, using default strategy")
 
-    ### AI에게 데이터 제공하고 판단 받기
+    # AI에게 데이터 제공하고 판단 받기
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     if not client.api_key:
         logger.error("OpenAI API key is missing or invalid.")
         return None
 
     try:
-        with sqlite3.connect('bitcoin_trades.db') as conn:
-            recent_trades = get_recent_trades(conn)
+        recent_trades = get_recent_trades()
 
-            current_market_data = {
-                "fear_greed_index": fear_greed_index,
-                "news_headlines": news_headlines,
-                "orderbook": orderbook,
-                "daily_ohlcv": df_daily.to_dict(),
-                "hourly_ohlcv": df_hourly.to_dict()
-            }
+        current_market_data = {
+            "fear_greed_index": fear_greed_index,
+            "news_headlines": news_headlines,
+            "orderbook": orderbook,
+            "daily_ohlcv": df_daily.to_dict(),
+            "hourly_ohlcv": df_hourly.to_dict()
+        }
 
-            reflection = generate_reflection(recent_trades, current_market_data)
-            logger.info(f"Reflection generated")
+        reflection = generate_reflection(recent_trades, current_market_data)
+        logger.info("Reflection generated")
 
-            response = client.chat.completions.create(
-                model="gpt-4.1",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": f"""You are an expert in Bitcoin investing. Analyze the provided data and determine whether to buy, sell, or hold at the current moment. Consider the following in your analysis:
+        response = client.chat.completions.create(
+            model="gpt-4.1",
+            messages=[
+                {
+                    "role": "system",
+                    "content": f"""You are an expert in Bitcoin investing. Analyze the provided data and determine whether to buy, sell, or hold at the current moment. Consider the following in your analysis:
 
-                        - Technical indicators and market data
-                        - Recent news headlines and their potential impact on Bitcoin price
-                        - The Fear and Greed Index and its implications
-                        - Overall market sentiment
-                        - Recent trading performance and reflection
+                    - Technical indicators and market data
+                    - Recent news headlines and their potential impact on Bitcoin price
+                    - The Fear and Greed Index and its implications
+                    - Overall market sentiment
+                    - Recent trading performance and reflection
 
-                        Recent trading reflection:
-                        {reflection}
+                    Recent trading reflection:
+                    {reflection}
 
-                        Particularly important is to always refer to the trading method of 'Wonyyotti', a legendary Korean investor:
+                    Particularly important is to always refer to the trading method of 'Wonyyotti', a legendary Korean investor:
 
-                        {strategy_content}
+                    {strategy_content}
 
-                        Based on this trading method, analyze the current market situation and make a judgment.
+                    Based on this trading method, analyze the current market situation and make a judgment.
 
-                        Response format:
-                        1. Decision (buy, sell, or hold)
-                        2. If 'buy': percentage (1-100) of available KRW to use
-                           If 'sell': percentage (1-100) of held BTC to sell
-                           If 'hold': set percentage to 0
-                        3. Reason for your decision
+                    Response format:
+                    1. Decision (buy, sell, or hold)
+                    2. If 'buy': percentage (1-100) of available KRW to use
+                       If 'sell': percentage (1-100) of held BTC to sell
+                       If 'hold': set percentage to 0
+                    3. Reason for your decision
 
-                        Ensure percentage is an integer between 1-100 for buy/sell, exactly 0 for hold."""
-                    },
-                    {
-                        "role": "user",
-                        "content": f"""Current investment status: {json.dumps(filtered_balances)}
-                Orderbook: {json.dumps(orderbook)}
-                Daily OHLCV with indicators (30 days): {df_daily.to_json()}
-                Hourly OHLCV with indicators (24 hours): {df_hourly.to_json()}
-                Recent news headlines: {json.dumps(news_headlines)}
-                Fear and Greed Index: {json.dumps(fear_greed_index)}"""
-                    }
-                ],
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "trading_decision",
-                        "strict": True,
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "decision": {"type": "string", "enum": ["buy", "sell", "hold"]},
-                                "percentage": {"type": "integer"},
-                                "reason": {"type": "string"}
-                            },
-                            "required": ["decision", "percentage", "reason"],
-                            "additionalProperties": False
-                        }
-                    }
+                    Ensure percentage is an integer between 1-100 for buy/sell, exactly 0 for hold."""
                 },
-                max_tokens=4095
-            )
+                {
+                    "role": "user",
+                    "content": f"""Current investment status: {json.dumps(filtered_balances)}
+                    Orderbook: {json.dumps(orderbook)}
+                    Daily OHLCV with indicators (30 days): {df_daily.to_json()}
+                    Hourly OHLCV with indicators (24 hours): {df_hourly.to_json()}
+                    Recent news headlines: {json.dumps(news_headlines)}
+                    Fear and Greed Index: {json.dumps(fear_greed_index)}"""
+                }
+            ],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "trading_decision",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "decision": {"type": "string", "enum": ["buy", "sell", "hold"]},
+                            "percentage": {"type": "integer"},
+                            "reason": {"type": "string"}
+                        },
+                        "required": ["decision", "percentage", "reason"],
+                        "additionalProperties": False
+                    }
+                }
+            },
+            max_tokens=4095
+        )
 
-            try:
-                result = TradingDecision.model_validate_json(response.choices[0].message.content)
-            except Exception as e:
-                logger.error(f"Error parsing AI response: {e}")
+        try:
+            result = TradingDecision.model_validate_json(response.choices[0].message.content)
+        except Exception as e:
+            logger.error(f"Error parsing AI response: {e}")
+            return
+
+        logger.info(f"AI Decision: {result.decision.upper()}")
+        logger.info(f"Percentage: {result.percentage}%")
+        logger.info(f"Reason: {result.reason}")
+
+        order_executed = False
+
+        if result.decision == "buy":
+            my_krw = upbit.get_balance("KRW")
+            if my_krw is None:
+                logger.error("Failed to retrieve KRW balance.")
                 return
-
-            logger.info(f"AI Decision: {result.decision.upper()}")
-            logger.info(f"Percentage: {result.percentage}%")
-            logger.info(f"Reason: {result.reason}")
-
-            order_executed = False
-
-            if result.decision == "buy":
-                my_krw = upbit.get_balance("KRW")
-                if my_krw is None:
-                    logger.error("Failed to retrieve KRW balance.")
-                    return
-                buy_amount = my_krw * (result.percentage / 100) * 0.9995
-                if buy_amount > 5000:
-                    logger.info(f"Executing Buy Order: {result.percentage}% of KRW ({buy_amount:,.0f} KRW)")
-                    try:
-                        order = upbit.buy_market_order("KRW-BTC", buy_amount)
-                        if order:
-                            logger.info(f"Buy order executed: {order}")
-                            order_executed = True
-                        else:
-                            logger.error("Buy order failed.")
-                    except Exception as e:
-                        logger.error(f"Error executing buy order: {e}")
-                else:
-                    logger.warning("Buy Order Failed: Insufficient KRW (< 5000)")
-
-            elif result.decision == "sell":
-                my_btc = upbit.get_balance("KRW-BTC")
-                if my_btc is None:
-                    logger.error("Failed to retrieve BTC balance.")
-                    return
-                sell_amount = my_btc * (result.percentage / 100)
-                current_price = pyupbit.get_current_price("KRW-BTC")
-                if sell_amount * current_price > 5000:
-                    logger.info(f"Executing Sell Order: {result.percentage}% of BTC ({sell_amount:.6f} BTC)")
-                    try:
-                        order = upbit.sell_market_order("KRW-BTC", sell_amount)
-                        if order:
-                            logger.info(f"Sell order executed: {order}")
-                            order_executed = True
-                        else:
-                            logger.error("Sell order failed.")
-                    except Exception as e:
-                        logger.error(f"Error executing sell order: {e}")
-                else:
-                    logger.warning("Sell Order Failed: Insufficient BTC (< 5000 KRW worth)")
+            buy_amount = my_krw * (result.percentage / 100) * 0.9995
+            if buy_amount > 5000:
+                logger.info(f"Executing Buy Order: {result.percentage}% of KRW ({buy_amount:,.0f} KRW)")
+                try:
+                    order = upbit.buy_market_order("KRW-BTC", buy_amount)
+                    if order:
+                        logger.info(f"Buy order executed: {order}")
+                        order_executed = True
+                    else:
+                        logger.error("Buy order failed.")
+                except Exception as e:
+                    logger.error(f"Error executing buy order: {e}")
             else:
-                logger.info("Decision: HOLD - No action taken")
+                logger.warning("Buy Order Failed: Insufficient KRW (< 5000)")
 
-            # 잔고 조회 및 기록
-            time.sleep(2)
-            balances = upbit.get_balances()
-            btc_balance = next((float(balance['balance']) for balance in balances if balance['currency'] == 'BTC'), 0)
-            krw_balance = next((float(balance['balance']) for balance in balances if balance['currency'] == 'KRW'), 0)
-            btc_avg_buy_price = next((float(balance['avg_buy_price']) for balance in balances if balance['currency'] == 'BTC'), 0)
-            current_btc_price = pyupbit.get_current_price("KRW-BTC")
+        elif result.decision == "sell":
+            my_btc = upbit.get_balance("KRW-BTC")
+            if my_btc is None:
+                logger.error("Failed to retrieve BTC balance.")
+                return
+            sell_amount = my_btc * (result.percentage / 100)
+            current_price = pyupbit.get_current_price("KRW-BTC")
+            if sell_amount * current_price > 5000:
+                logger.info(f"Executing Sell Order: {result.percentage}% of BTC ({sell_amount:.6f} BTC)")
+                try:
+                    order = upbit.sell_market_order("KRW-BTC", sell_amount)
+                    if order:
+                        logger.info(f"Sell order executed: {order}")
+                        order_executed = True
+                    else:
+                        logger.error("Sell order failed.")
+                except Exception as e:
+                    logger.error(f"Error executing sell order: {e}")
+            else:
+                logger.warning("Sell Order Failed: Insufficient BTC (< 5000 KRW worth)")
+        else:
+            logger.info("Decision: HOLD - No action taken")
 
-            log_trade(conn, result.decision, result.percentage if order_executed else 0, result.reason,
-                    btc_balance, krw_balance, btc_avg_buy_price, current_btc_price, reflection)
+        # 잔고 조회 및 기록
+        time.sleep(2)
+        balances = upbit.get_balances()
+        btc_balance = next((float(balance['balance']) for balance in balances if balance['currency'] == 'BTC'), 0)
+        krw_balance = next((float(balance['balance']) for balance in balances if balance['currency'] == 'KRW'), 0)
+        btc_avg_buy_price = next((float(balance['avg_buy_price']) for balance in balances if balance['currency'] == 'BTC'), 0)
+        current_btc_price = pyupbit.get_current_price("KRW-BTC")
 
-            logger.info(f"Current Balance - BTC: {btc_balance:.6f}, KRW: {krw_balance:,.0f}")
-            logger.info("=== AI Trading Completed ===\n")
+        log_trade(
+            result.decision,
+            result.percentage if order_executed else 0,
+            result.reason,
+            btc_balance,
+            krw_balance,
+            btc_avg_buy_price,
+            current_btc_price,
+            reflection
+        )
 
-    except sqlite3.Error as e:
-        logger.error(f"Database connection error: {e}")
+        logger.info(f"Current Balance - BTC: {btc_balance:.6f}, KRW: {krw_balance:,.0f}")
+        logger.info("=== AI Trading Completed ===\n")
+
+    except Exception as e:
+        logger.error(f"Error in ai_trading: {e}")
         return
 
 if __name__ == "__main__":
-    # 데이터베이스 초기화
-    init_db()
-    logger.info("Database initialized")
+    logger.info("Trading bot starting...")
 
     # 중복 실행 방지
     trading_in_progress = False
@@ -432,4 +444,4 @@ if __name__ == "__main__":
 
     while True:
         schedule.run_pending()
-        time.sleep(60)  # 1분마다 체크
+        time.sleep(60)

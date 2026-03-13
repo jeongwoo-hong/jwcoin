@@ -6,3 +6,4 @@ pandas
 requests
 pydantic
 schedule
+supabase

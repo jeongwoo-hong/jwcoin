@@ -117,7 +117,7 @@ python3 -m venv venv
 source venv/bin/activate
 
 # 의존성 설치 (Selenium 제외)
-pip install python-dotenv openai pyupbit ta youtube-transcript-api pydantic requests schedule
+pip install python-dotenv openai pyupbit ta pydantic requests schedule supabase
 ```
 
 ---
@@ -135,6 +135,8 @@ UPBIT_ACCESS_KEY=your_upbit_access_key
 UPBIT_SECRET_KEY=your_upbit_secret_key
 OPENAI_API_KEY=your_openai_key
 SERPAPI_API_KEY=your_serpapi_key
+SUPABASE_URL=your_supabase_url
+SUPABASE_KEY=your_supabase_key
 ENVIRONMENT=ec2
 ```
 
