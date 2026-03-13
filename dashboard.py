@@ -273,22 +273,17 @@ def calculate_performance(trades_df, deposits_df, expenses_df, current_btc_price
 # 차트 함수들
 # ============================================================================
 
-def create_asset_chart(df, deposits_df, current_price):
-    """자산 증감 차트 (최초입금일 기준)"""
+def create_asset_chart(df, deposits_df, current_price, start_date=None):
+    """자산 증감 차트 (시작일 기준)"""
     if df.empty:
         return go.Figure()
     df_sorted = df.sort_values('timestamp').copy()
 
-    # 최초 입금일 찾기
-    first_deposit_date = None
-    if not deposits_df.empty:
-        deposit_only = deposits_df[deposits_df['type'] == 'deposit']
-        if not deposit_only.empty:
-            first_deposit_date = deposit_only['created_at'].min()
-
-    # 최초 입금일 이후 데이터만 필터링
-    if first_deposit_date is not None:
-        df_sorted = df_sorted[df_sorted['timestamp'] >= first_deposit_date]
+    # 시작일 필터링
+    if start_date is not None:
+        start_datetime = datetime.combine(start_date, datetime.min.time())
+        start_datetime = start_datetime.replace(tzinfo=KST)
+        df_sorted = df_sorted[df_sorted['timestamp'] >= start_datetime]
 
     if df_sorted.empty:
         fig = go.Figure()
@@ -324,23 +319,18 @@ def create_asset_chart(df, deposits_df, current_price):
     )
     return fig
 
-def create_profit_chart(df, deposits_df, current_price):
-    """실질 수익 추이 차트 (최초입금일 기준)"""
+def create_profit_chart(df, deposits_df, current_price, start_date=None):
+    """실질 수익 추이 차트 (시작일 기준)"""
     if df.empty:
         return go.Figure()
 
     df_sorted = df.sort_values('timestamp').copy()
 
-    # 최초 입금일 찾기
-    first_deposit_date = None
-    if not deposits_df.empty:
-        deposit_only = deposits_df[deposits_df['type'] == 'deposit']
-        if not deposit_only.empty:
-            first_deposit_date = deposit_only['created_at'].min()
-
-    # 최초 입금일 이후 데이터만 필터링
-    if first_deposit_date is not None:
-        df_sorted = df_sorted[df_sorted['timestamp'] >= first_deposit_date]
+    # 시작일 필터링
+    if start_date is not None:
+        start_datetime = datetime.combine(start_date, datetime.min.time())
+        start_datetime = start_datetime.replace(tzinfo=KST)
+        df_sorted = df_sorted[df_sorted['timestamp'] >= start_datetime]
 
     if df_sorted.empty:
         fig = go.Figure()
@@ -354,12 +344,16 @@ def create_profit_chart(df, deposits_df, current_price):
     # 초기 자산 (필터링 후 첫 번째 기록)
     initial_asset = df_sorted.iloc[0]['total']
 
-    # 순입금 계산
+    # 순입금 계산 (시작일 이후만)
     net_deposits = 0
-    if not deposits_df.empty:
-        total_dep = deposits_df[deposits_df['type'] == 'deposit']['amount'].sum()
-        total_wd = deposits_df[deposits_df['type'] == 'withdraw']['amount'].sum()
-        net_deposits = total_dep - total_wd
+    if not deposits_df.empty and start_date is not None:
+        start_datetime = datetime.combine(start_date, datetime.min.time())
+        start_datetime = start_datetime.replace(tzinfo=KST)
+        filtered_deposits = deposits_df[deposits_df['created_at'] >= start_datetime]
+        if not filtered_deposits.empty:
+            total_dep = filtered_deposits[filtered_deposits['type'] == 'deposit']['amount'].sum()
+            total_wd = filtered_deposits[filtered_deposits['type'] == 'withdraw']['amount'].sum()
+            net_deposits = total_dep - total_wd
 
     # 실질 수익 = 현재 자산 - 초기 자산 - 순입금
     df_sorted['profit'] = df_sorted['total'] - initial_asset - net_deposits
@@ -518,6 +512,15 @@ def main():
         st.title("⚙️ 설정")
         days = st.slider("조회 기간", 1, 90, 30, format="%d일")
 
+        st.divider()
+        st.markdown("##### 📅 차트 시작일")
+        chart_start_date = st.date_input(
+            "시작일 선택",
+            value=datetime.now(KST) - timedelta(days=7),
+            max_value=datetime.now(KST).date(),
+            help="이 날짜 이후의 데이터만 차트에 표시됩니다"
+        )
+
         if st.button("🔄 새로고침", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
@@ -603,11 +606,11 @@ def main():
     # 상단: 자산 추이 & 실질 수익 (2열)
     c1, c2 = st.columns(2)
     with c1:
-        st.caption("자산 증감 (시작점 대비)")
-        st.plotly_chart(create_asset_chart(trades_df, btc_price), use_container_width=True, config={'displayModeBar': False})
+        st.caption(f"자산 증감 ({chart_start_date} 이후)")
+        st.plotly_chart(create_asset_chart(trades_df, deposits_df, btc_price, chart_start_date), use_container_width=True, config={'displayModeBar': False})
     with c2:
-        st.caption("실질 수익 추이 (입출금/비용 제외)")
-        st.plotly_chart(create_profit_chart(trades_df, deposits_df, btc_price), use_container_width=True, config={'displayModeBar': False})
+        st.caption(f"실질 수익 추이 ({chart_start_date} 이후)")
+        st.plotly_chart(create_profit_chart(trades_df, deposits_df, btc_price, chart_start_date), use_container_width=True, config={'displayModeBar': False})
 
     # 하단: 3개 차트
     c1, c2, c3 = st.columns(3)
