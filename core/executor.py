@@ -119,11 +119,11 @@ class TradeExecutor:
                     btc = balance["btc_balance"]
                     sell_amount = btc * (percentage / 100)
                     current_price = balance["current_price"]
-                    
+
                     if sell_amount * current_price < 5000:
                         logger.warning("Sell amount too small")
                         return False
-                    
+
                     order = self.upbit.sell_market_order("KRW-BTC", sell_amount)
                     logger.info(f"SELL executed: {sell_amount:.6f} BTC ({percentage}%)")
                 

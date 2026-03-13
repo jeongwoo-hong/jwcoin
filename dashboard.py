@@ -230,39 +230,47 @@ def calculate_monthly_expenses(expenses_df, days=30):
     return total, by_cat
 
 def calculate_performance(trades_df, deposits_df, expenses_df, current_btc_price, days=30):
-    if trades_df.empty or len(trades_df) < 2:
+    if trades_df.empty:
         return {}
+
     df_sorted = trades_df.sort_values('timestamp')
-    first, last = df_sorted.iloc[0], df_sorted.iloc[-1]
+    last = df_sorted.iloc[-1]
 
-    # 현재 BTC 가격으로 통일
+    # 현재 BTC 가격으로 총자산 계산
     price = current_btc_price or last['btc_krw_price']
-    initial = first['krw_balance'] + first['btc_balance'] * price
-    final = last['krw_balance'] + last['btc_balance'] * price
+    current_total = last['krw_balance'] + last['btc_balance'] * price
 
+    # 총 입금 / 출금
     total_dep = deposits_df[deposits_df['type'] == 'deposit']['amount'].sum() if not deposits_df.empty else 0
     total_wd = deposits_df[deposits_df['type'] == 'withdraw']['amount'].sum() if not deposits_df.empty else 0
     net_dep = total_dep - total_wd
 
+    # 월간 비용
     monthly_exp, exp_by_cat = calculate_monthly_expenses(expenses_df, days)
 
-    trading_profit = (final - initial) - net_dep
-    invested = initial + net_dep
-    trading_rate = (trading_profit / invested * 100) if invested > 0 else 0
-    real_profit = trading_profit - monthly_exp
-    real_rate = (real_profit / invested * 100) if invested > 0 else 0
+    # 실질 수익 = 현재 총자산 - 순입금액
+    real_profit = current_total - net_dep
+    real_rate = (real_profit / net_dep * 100) if net_dep > 0 else 0
+
+    # 비용 제외 순수익
+    net_profit = real_profit - monthly_exp
+    net_rate = (net_profit / net_dep * 100) if net_dep > 0 else 0
 
     return {
-        'initial': initial, 'final': final,
-        'total_deposits': total_dep, 'total_withdrawals': total_wd, 'net_deposits': net_dep,
-        'trading_profit': trading_profit, 'trading_rate': trading_rate,
-        'monthly_expenses': monthly_exp, 'expenses_by_cat': exp_by_cat,
-        'real_profit': real_profit, 'real_rate': real_rate,
+        'current_total': current_total,
+        'total_deposits': total_dep,
+        'total_withdrawals': total_wd,
+        'net_deposits': net_dep,
+        'real_profit': real_profit,
+        'real_rate': real_rate,
+        'monthly_expenses': monthly_exp,
+        'expenses_by_cat': exp_by_cat,
+        'net_profit': net_profit,
+        'net_rate': net_rate,
         'total_trades': len(trades_df),
         'buy_count': len(trades_df[trades_df['decision'] == 'buy']),
         'sell_count': len(trades_df[trades_df['decision'] == 'sell']),
         'hold_count': len(trades_df[trades_df['decision'] == 'hold']),
-        # 출처별 통계 (source 컬럼이 있는 경우)
         'scheduled_count': len(trades_df[trades_df['source'] == 'scheduled']) if 'source' in trades_df.columns else 0,
         'triggered_count': len(trades_df[trades_df['source'] == 'triggered']) if 'source' in trades_df.columns else 0,
         'stop_loss_count': len(trades_df[trades_df['source'] == 'stop_loss']) if 'source' in trades_df.columns else 0,
@@ -320,7 +328,7 @@ def create_asset_chart(df, deposits_df, current_price, start_date=None):
     return fig
 
 def create_profit_chart(df, deposits_df, current_price, start_date=None):
-    """실질 수익 추이 차트 (시작일 기준)"""
+    """실질 수익 추이 차트 (총자산 - 순입금)"""
     if df.empty:
         return go.Figure()
 
@@ -338,29 +346,17 @@ def create_profit_chart(df, deposits_df, current_price, start_date=None):
         fig.update_layout(margin=dict(l=0, r=0, t=30, b=0), height=280, template='plotly_dark')
         return fig
 
-    # 각 시점의 총 자산 계산 (현재 가격 기준)
-    df_sorted['total'] = df_sorted['krw_balance'] + df_sorted['btc_balance'] * current_price
-
-    # 초기 자산 (필터링 후 첫 번째 기록)
-    initial_asset = df_sorted.iloc[0]['total']
-
-    # 순입금 계산 (시작일 이후만)
+    # 총 순입금 계산 (전체 기간)
     net_deposits = 0
-    if not deposits_df.empty and start_date is not None:
-        start_datetime = datetime.combine(start_date, datetime.min.time())
-        start_datetime = start_datetime.replace(tzinfo=KST)
-        filtered_deposits = deposits_df[deposits_df['created_at'] >= start_datetime]
-        if not filtered_deposits.empty:
-            total_dep = filtered_deposits[filtered_deposits['type'] == 'deposit']['amount'].sum()
-            total_wd = filtered_deposits[filtered_deposits['type'] == 'withdraw']['amount'].sum()
-            net_deposits = total_dep - total_wd
+    if not deposits_df.empty:
+        total_dep = deposits_df[deposits_df['type'] == 'deposit']['amount'].sum()
+        total_wd = deposits_df[deposits_df['type'] == 'withdraw']['amount'].sum()
+        net_deposits = total_dep - total_wd
 
-    # 실질 수익 = 현재 자산 - 초기 자산 - 순입금
-    df_sorted['profit'] = df_sorted['total'] - initial_asset - net_deposits
-
-    # 수익률 계산
-    invested = initial_asset + net_deposits
-    df_sorted['profit_rate'] = (df_sorted['profit'] / invested * 100) if invested > 0 else 0
+    # 각 시점의 총 자산 및 실질 수익 계산
+    df_sorted['total'] = df_sorted['krw_balance'] + df_sorted['btc_balance'] * current_price
+    df_sorted['profit'] = df_sorted['total'] - net_deposits
+    df_sorted['profit_rate'] = (df_sorted['profit'] / net_deposits * 100) if net_deposits > 0 else 0
 
     fig = go.Figure()
 
@@ -603,11 +599,11 @@ def main():
     # ===== 투자 성과 =====
     st.markdown("## 📊 투자 성과")
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("입금", f"₩{format_krw(perf.get('total_deposits', 0))}")
-    c2.metric("출금", f"₩{format_krw(perf.get('total_withdrawals', 0))}")
-    c3.metric("투자수익", f"₩{format_krw(perf.get('trading_profit', 0))}", f"{perf.get('trading_rate', 0):+.2f}%")
+    c1.metric("순입금", f"₩{format_krw(perf.get('net_deposits', 0))}", help="입금 - 출금")
+    c2.metric("현재 총자산", f"₩{format_krw(perf.get('current_total', 0))}")
+    c3.metric("실질수익", f"₩{format_krw(perf.get('real_profit', 0))}", f"{perf.get('real_rate', 0):+.2f}%", help="총자산 - 순입금")
     c4.metric("운영비용", f"₩{format_krw(perf.get('monthly_expenses', 0))}/월")
-    c5.metric("실질수익", f"₩{format_krw(perf.get('real_profit', 0))}", f"{perf.get('real_rate', 0):+.2f}%")
+    c5.metric("순수익", f"₩{format_krw(perf.get('net_profit', 0))}", f"{perf.get('net_rate', 0):+.2f}%", help="실질수익 - 운영비용")
 
     # ===== 차트 =====
     st.markdown("## 📈 차트")
