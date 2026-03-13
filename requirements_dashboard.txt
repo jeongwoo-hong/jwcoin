@@ -4,3 +4,4 @@ pandas
 pyupbit
 python-dotenv
 supabase
+deep-translator
