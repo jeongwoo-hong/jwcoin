@@ -197,6 +197,12 @@ def main():
         initial_sidebar_state="expanded"
     )
 
+    # 디버그: 환경변수 확인
+    import os
+    st.sidebar.write(f"PORT: {os.getenv('PORT', 'not set')}")
+    st.sidebar.write(f"SUPABASE_URL: {'set' if os.getenv('SUPABASE_URL') else 'not set'}")
+    st.sidebar.write(f"SUPABASE_KEY: {'set' if os.getenv('SUPABASE_KEY') else 'not set'}")
+
     # 커스텀 CSS
     st.markdown("""
     <style>
