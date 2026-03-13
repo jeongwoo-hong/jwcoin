@@ -229,13 +229,16 @@ def calculate_monthly_expenses(expenses_df, days=30):
         by_cat[cat] = by_cat.get(cat, 0) + monthly
     return total, by_cat
 
-def calculate_performance(trades_df, deposits_df, expenses_df, days=30):
+def calculate_performance(trades_df, deposits_df, expenses_df, current_btc_price, days=30):
     if trades_df.empty or len(trades_df) < 2:
         return {}
     df_sorted = trades_df.sort_values('timestamp')
     first, last = df_sorted.iloc[0], df_sorted.iloc[-1]
-    initial = first['krw_balance'] + first['btc_balance'] * first['btc_krw_price']
-    final = last['krw_balance'] + last['btc_balance'] * last['btc_krw_price']
+
+    # 현재 BTC 가격으로 통일
+    price = current_btc_price or last['btc_krw_price']
+    initial = first['krw_balance'] + first['btc_balance'] * price
+    final = last['krw_balance'] + last['btc_balance'] * price
 
     total_dep = deposits_df[deposits_df['type'] == 'deposit']['amount'].sum() if not deposits_df.empty else 0
     total_wd = deposits_df[deposits_df['type'] == 'withdraw']['amount'].sum() if not deposits_df.empty else 0
@@ -458,8 +461,8 @@ def main():
         st.warning("거래 기록이 없습니다.")
         st.stop()
 
-    # 성과 계산
-    perf = calculate_performance(trades_df, deposits_df, expenses_df, days)
+    # 성과 계산 (현재 BTC 가격 기준)
+    perf = calculate_performance(trades_df, deposits_df, expenses_df, btc_price, days)
     latest = trades_df.iloc[0]
     btc_val = latest['btc_balance'] * (btc_price or latest['btc_krw_price'])
     total_asset = latest['krw_balance'] + btc_val
