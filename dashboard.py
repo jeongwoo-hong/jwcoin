@@ -273,18 +273,31 @@ def calculate_performance(trades_df, deposits_df, expenses_df, current_btc_price
 # 차트 함수들
 # ============================================================================
 
-def create_asset_chart(df):
+def create_asset_chart(df, current_price):
+    """자산 증감 차트 (시작점 대비)"""
     if df.empty:
         return go.Figure()
     df_sorted = df.sort_values('timestamp').copy()
-    df_sorted['total'] = df_sorted['krw_balance'] + df_sorted['btc_balance'] * df_sorted['btc_krw_price']
+
+    # 현재 가격으로 통일
+    price = current_price or df_sorted['btc_krw_price'].iloc[-1]
+    df_sorted['total'] = df_sorted['krw_balance'] + df_sorted['btc_balance'] * price
+
+    # 시작점 대비 변화량
+    initial = df_sorted['total'].iloc[0]
+    df_sorted['change'] = df_sorted['total'] - initial
+
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=df_sorted['timestamp'], y=df_sorted['total'],
-        mode='lines', name='총 자산',
+        x=df_sorted['timestamp'], y=df_sorted['change'],
+        mode='lines', name='자산 증감',
         line=dict(color='#00D4AA', width=2),
         fill='tozeroy', fillcolor='rgba(0, 212, 170, 0.1)'
     ))
+
+    # 0선
+    fig.add_hline(y=0, line_dash="dash", line_color="rgba(255,255,255,0.3)")
+
     fig.update_layout(
         margin=dict(l=0, r=0, t=30, b=0),
         height=280, template='plotly_dark',
@@ -552,8 +565,8 @@ def main():
     # 상단: 자산 추이 & 실질 수익 (2열)
     c1, c2 = st.columns(2)
     with c1:
-        st.caption("총 자산 추이")
-        st.plotly_chart(create_asset_chart(trades_df), use_container_width=True, config={'displayModeBar': False})
+        st.caption("자산 증감 (시작점 대비)")
+        st.plotly_chart(create_asset_chart(trades_df, btc_price), use_container_width=True, config={'displayModeBar': False})
     with c2:
         st.caption("실질 수익 추이 (입출금/비용 제외)")
         st.plotly_chart(create_profit_chart(trades_df, deposits_df, btc_price), use_container_width=True, config={'displayModeBar': False})
