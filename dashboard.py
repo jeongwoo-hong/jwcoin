@@ -358,54 +358,43 @@ def create_expense_chart(by_cat):
 def main():
     st.set_page_config(page_title="JWCoin Dashboard", page_icon="📈", layout="wide")
 
-    # CSS
+    # CSS (테마는 .streamlit/config.toml에서 설정)
     st.markdown("""
     <style>
-    /* 전체 배경 */
-    .main { background-color: #0a0a0f; }
-    .block-container { padding: 1rem 2rem; }
+    /* 헤더 숨김 */
+    header[data-testid="stHeader"] { display: none !important; }
+    #MainMenu { visibility: hidden; }
+    footer { visibility: hidden; }
 
-    /* 제목 스타일 */
+    /* 레이아웃 */
+    .block-container { padding: 1rem 2rem; max-width: 100%; }
+
+    /* 제목 크기 */
     h1 { font-size: 1.5rem !important; font-weight: 600 !important; margin-bottom: 0.5rem !important; }
-    h2 { font-size: 1.1rem !important; font-weight: 500 !important; color: #888 !important; margin: 1rem 0 0.5rem 0 !important; }
+    h2 { font-size: 1.1rem !important; font-weight: 500 !important; margin: 1rem 0 0.5rem 0 !important; }
     h3 { font-size: 1rem !important; font-weight: 500 !important; }
 
     /* 메트릭 카드 */
     [data-testid="stMetric"] {
-        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-        border: 1px solid #2a2a4a;
+        border: 1px solid rgba(255,255,255,0.1);
         border-radius: 12px;
         padding: 1rem;
     }
-    [data-testid="stMetricLabel"] { font-size: 0.75rem; color: #888; }
+    [data-testid="stMetricLabel"] { font-size: 0.75rem; }
     [data-testid="stMetricValue"] { font-size: 1.2rem; font-weight: 600; }
-    [data-testid="stMetricDelta"] { font-size: 0.8rem; }
 
     /* 탭 스타일 */
     .stTabs [data-baseweb="tab-list"] { gap: 8px; }
-    .stTabs [data-baseweb="tab"] {
-        background-color: #1a1a2e;
-        border-radius: 8px;
-        padding: 8px 16px;
-        font-size: 0.85rem;
-    }
+    .stTabs [data-baseweb="tab"] { border-radius: 8px; padding: 8px 16px; font-size: 0.85rem; }
 
     /* 데이터프레임 */
     .stDataFrame { border-radius: 8px; overflow: hidden; }
 
-    /* 사이드바 */
-    [data-testid="stSidebar"] { background-color: #0f0f1a; }
-    [data-testid="stSidebar"] .stMarkdown h1 { font-size: 1rem !important; }
-
     /* 버튼 */
-    .stButton > button {
-        border-radius: 8px;
-        font-size: 0.85rem;
-        padding: 0.4rem 1rem;
-    }
+    .stButton > button { border-radius: 8px; font-size: 0.85rem; padding: 0.4rem 1rem; }
 
     /* 구분선 */
-    hr { border-color: #2a2a4a; margin: 1rem 0; }
+    hr { margin: 1rem 0; }
 
     /* Expander */
     .streamlit-expanderHeader { font-size: 0.85rem; }
