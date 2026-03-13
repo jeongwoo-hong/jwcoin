@@ -1,0 +1,8 @@
+python-dotenv
+openai
+pyupbit
+ta
+pandas
+requests
+pydantic
+schedule
