@@ -261,7 +261,12 @@ def calculate_performance(trades_df, deposits_df, expenses_df, current_btc_price
         'total_trades': len(trades_df),
         'buy_count': len(trades_df[trades_df['decision'] == 'buy']),
         'sell_count': len(trades_df[trades_df['decision'] == 'sell']),
-        'hold_count': len(trades_df[trades_df['decision'] == 'hold'])
+        'hold_count': len(trades_df[trades_df['decision'] == 'hold']),
+        # 출처별 통계 (source 컬럼이 있는 경우)
+        'scheduled_count': len(trades_df[trades_df['source'] == 'scheduled']) if 'source' in trades_df.columns else 0,
+        'triggered_count': len(trades_df[trades_df['source'] == 'triggered']) if 'source' in trades_df.columns else 0,
+        'stop_loss_count': len(trades_df[trades_df['source'] == 'stop_loss']) if 'source' in trades_df.columns else 0,
+        'take_profit_count': len(trades_df[trades_df['source'] == 'take_profit']) if 'source' in trades_df.columns else 0
     }
 
 # ============================================================================
@@ -508,19 +513,66 @@ def main():
 
     with tab1:
         if not trades_df.empty:
-            display = trades_df[['timestamp', 'decision', 'percentage', 'btc_balance', 'krw_balance', 'btc_krw_price', 'reason']].head(15).copy()
+            # 기본 컬럼
+            cols = ['timestamp', 'decision', 'percentage']
+
+            # source 컬럼이 있으면 추가
+            if 'source' in trades_df.columns:
+                cols.append('source')
+
+            # pnl_percentage 컬럼이 있으면 추가
+            if 'pnl_percentage' in trades_df.columns:
+                cols.append('pnl_percentage')
+
+            cols.extend(['btc_balance', 'btc_krw_price', 'reason'])
+
+            # trigger_reason이 있으면 추가
+            if 'trigger_reason' in trades_df.columns:
+                cols.append('trigger_reason')
+
+            display = trades_df[[c for c in cols if c in trades_df.columns]].head(20).copy()
             display['timestamp'] = display['timestamp'].dt.strftime('%m/%d %H:%M')
-            display['decision'] = display['decision'].map({'buy': '🟢매수', 'sell': '🔴매도', 'hold': '⚪홀드'})
+            display['decision'] = display['decision'].map({'buy': '🟢매수', 'sell': '🔴매도', 'hold': '⚪홀드', 'partial_sell': '🟡부분매도'})
+
+            # source 포맷팅
+            if 'source' in display.columns:
+                display['source'] = display['source'].map({
+                    'scheduled': '🕐정기',
+                    'triggered': '⚡긴급',
+                    'stop_loss': '🛑손절',
+                    'take_profit': '💰익절'
+                }).fillna('🕐정기')
+
+            # pnl_percentage 포맷팅
+            if 'pnl_percentage' in display.columns:
+                display['pnl_percentage'] = display['pnl_percentage'].apply(
+                    lambda x: f"{x*100:+.1f}%" if pd.notna(x) and x != 0 else "-"
+                )
+
             display['btc_balance'] = display['btc_balance'].apply(lambda x: f"{x:.4f}")
-            display['krw_balance'] = display['krw_balance'].apply(lambda x: f"{x:,.0f}")
             display['btc_krw_price'] = display['btc_krw_price'].apply(lambda x: f"{x:,.0f}")
-            display['reason'] = display['reason'].apply(lambda x: str(x)[:50] + '...' if len(str(x)) > 50 else x)
-            display.columns = ['시간', '결정', '%', 'BTC', 'KRW', 'BTC가격', '이유']
-            st.dataframe(display, use_container_width=True, hide_index=True, height=400)
+            display['reason'] = display['reason'].apply(lambda x: str(x)[:40] + '...' if len(str(x)) > 40 else x)
+
+            # trigger_reason 포맷팅
+            if 'trigger_reason' in display.columns:
+                display['trigger_reason'] = display['trigger_reason'].apply(
+                    lambda x: str(x)[:30] + '...' if pd.notna(x) and len(str(x)) > 30 else (x if pd.notna(x) else "-")
+                )
+
+            # 컬럼명 변경
+            col_names = {
+                'timestamp': '시간', 'decision': '결정', 'percentage': '%',
+                'source': '출처', 'pnl_percentage': '손익',
+                'btc_balance': 'BTC', 'btc_krw_price': '가격',
+                'reason': '이유', 'trigger_reason': '트리거'
+            }
+            display.columns = [col_names.get(c, c) for c in display.columns]
+
+            st.dataframe(display, use_container_width=True, hide_index=True, height=450)
 
             # 번역
             with st.expander("🌐 번역"):
-                idx = st.selectbox("거래 선택", range(min(15, len(trades_df))), format_func=lambda i: f"{trades_df.iloc[i]['timestamp'].strftime('%m/%d %H:%M')} - {trades_df.iloc[i]['decision']}")
+                idx = st.selectbox("거래 선택", range(min(20, len(trades_df))), format_func=lambda i: f"{trades_df.iloc[i]['timestamp'].strftime('%m/%d %H:%M')} - {trades_df.iloc[i]['decision']}")
                 if st.button("번역", key="tr_reason"):
                     with st.spinner("번역 중..."):
                         st.success(translate_to_korean(trades_df.iloc[idx]['reason']))
@@ -575,9 +627,10 @@ def main():
 
     # ===== 푸터 =====
     st.divider()
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     c1.caption(f"거래: {perf.get('total_trades', 0)}회 (매수 {perf.get('buy_count', 0)} / 매도 {perf.get('sell_count', 0)} / 홀드 {perf.get('hold_count', 0)})")
-    c2.caption(f"업데이트: {datetime.now(KST).strftime('%Y-%m-%d %H:%M')} KST")
+    c2.caption(f"🕐정기 {perf.get('scheduled_count', 0)} / ⚡긴급 {perf.get('triggered_count', 0)} / 🛑손절 {perf.get('stop_loss_count', 0)} / 💰익절 {perf.get('take_profit_count', 0)}")
+    c3.caption(f"업데이트: {datetime.now(KST).strftime('%Y-%m-%d %H:%M')} KST")
 
 if __name__ == "__main__":
     main()
