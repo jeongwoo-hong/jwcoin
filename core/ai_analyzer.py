@@ -4,11 +4,28 @@ AI 분석 모듈
 import os
 import json
 from typing import Dict, Optional, List
+from datetime import datetime
 from openai import OpenAI
 from pydantic import BaseModel
+from supabase import create_client, Client
 import logging
 
 logger = logging.getLogger(__name__)
+
+# OpenAI 모델별 가격 (USD per 1K tokens) - 2024년 기준 대략적 가격
+MODEL_PRICING = {
+    "gpt-4.1": {
+        "input": 0.01,    # $0.01 per 1K input tokens
+        "output": 0.03    # $0.03 per 1K output tokens
+    },
+    "gpt-4.1-mini": {
+        "input": 0.0004,  # $0.0004 per 1K input tokens
+        "output": 0.0016  # $0.0016 per 1K output tokens
+    }
+}
+
+# 환율 (대략적)
+USD_TO_KRW = 1450
 
 class TradingDecision(BaseModel):
     decision: str
@@ -18,8 +35,47 @@ class TradingDecision(BaseModel):
 class AIAnalyzer:
     def __init__(self):
         self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        self.supabase: Client = create_client(
+            os.getenv("SUPABASE_URL"),
+            os.getenv("SUPABASE_KEY")
+        )
     
-    def _call_ai(self, system_prompt: str, user_prompt: str, model: str = "gpt-4.1") -> Optional[TradingDecision]:
+    def _calculate_cost(self, model: str, input_tokens: int, output_tokens: int) -> Dict:
+        """토큰 사용량 기반 비용 계산"""
+        pricing = MODEL_PRICING.get(model, MODEL_PRICING["gpt-4.1"])
+
+        input_cost_usd = (input_tokens / 1000) * pricing["input"]
+        output_cost_usd = (output_tokens / 1000) * pricing["output"]
+        total_cost_usd = input_cost_usd + output_cost_usd
+        total_cost_krw = total_cost_usd * USD_TO_KRW
+
+        return {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+            "cost_usd": total_cost_usd,
+            "cost_krw": total_cost_krw
+        }
+
+    def _log_api_cost(self, model: str, analysis_type: str, cost_info: Dict):
+        """API 비용을 Supabase에 저장"""
+        try:
+            data = {
+                "category": "api",
+                "name": f"OpenAI {model}",
+                "amount": round(cost_info["cost_krw"], 2),
+                "description": f"{analysis_type} - {cost_info['total_tokens']} tokens (${cost_info['cost_usd']:.6f})",
+                "is_recurring": False
+            }
+
+            self.supabase.table("expenses").insert(data).execute()
+            logger.debug(f"API cost logged: {cost_info['cost_krw']:.2f} KRW ({cost_info['total_tokens']} tokens)")
+
+        except Exception as e:
+            logger.error(f"API cost logging error: {e}")
+
+    def _call_ai(self, system_prompt: str, user_prompt: str, model: str = "gpt-4.1",
+                 analysis_type: str = "analysis") -> Optional[TradingDecision]:
         """AI 호출"""
         try:
             response = self.client.chat.completions.create(
@@ -47,7 +103,16 @@ class AIAnalyzer:
                 },
                 max_tokens=500
             )
-            
+
+            # 토큰 사용량 추적 및 비용 계산
+            if response.usage:
+                cost_info = self._calculate_cost(
+                    model=model,
+                    input_tokens=response.usage.prompt_tokens,
+                    output_tokens=response.usage.completion_tokens
+                )
+                self._log_api_cost(model, analysis_type, cost_info)
+
             return TradingDecision.model_validate_json(response.choices[0].message.content)
         except Exception as e:
             logger.error(f"AI call error: {e}")
@@ -83,7 +148,7 @@ class AIAnalyzer:
 
 빠르게 판단해주세요."""
 
-        return self._call_ai(system_prompt, user_prompt, model="gpt-4.1-mini")
+        return self._call_ai(system_prompt, user_prompt, model="gpt-4.1-mini", analysis_type="긴급분석")
     
     def pnl_analysis(self, pnl_info: Dict, indicators: Dict) -> Optional[TradingDecision]:
         """손절/익절 분석"""
@@ -102,8 +167,8 @@ class AIAnalyzer:
 - 볼린저밴드: {indicators['bb_lower']:,.0f} ~ {indicators['bb_upper']:,.0f}
 - 거래량: 평균 대비 {indicators['volume_ratio']*100:.0f}%"""
 
-        return self._call_ai(system_prompt, user_prompt, model="gpt-4.1-mini")
-    
+        return self._call_ai(system_prompt, user_prompt, model="gpt-4.1-mini", analysis_type="손익분석")
+
     def scheduled_analysis(self, market_data: Dict, balance_info: Dict, 
                           recent_trades: str = "", reflection: str = "") -> Optional[TradingDecision]:
         """정기 분석 (4시간마다)"""
@@ -140,4 +205,4 @@ class AIAnalyzer:
 
 종합적으로 분석하고 판단해주세요."""
 
-        return self._call_ai(system_prompt, user_prompt, model="gpt-4.1")
+        return self._call_ai(system_prompt, user_prompt, model="gpt-4.1", analysis_type="정기분석")
