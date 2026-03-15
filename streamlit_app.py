@@ -638,13 +638,23 @@ def main():
             if 'upbit_page' not in st.session_state:
                 st.session_state.upbit_page = 1
 
-            col1, col2, col3 = st.columns([1, 2, 1])
+            col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
+            with col1:
+                if st.button('⏮️ 처음', key='upbit_first'):
+                    st.session_state.upbit_page = 1
             with col2:
-                st.session_state.upbit_page = st.number_input(
-                    f'페이지 (총 {total_pages}페이지, {len(display_df)}건)',
-                    min_value=1, max_value=total_pages, value=st.session_state.upbit_page,
-                    key='upbit_page_input'
-                )
+                if st.button('◀️ 이전', key='upbit_prev'):
+                    if st.session_state.upbit_page > 1:
+                        st.session_state.upbit_page -= 1
+            with col3:
+                st.markdown(f"<p style='text-align:center; margin-top:8px;'>{st.session_state.upbit_page} / {total_pages} 페이지 ({len(display_df)}건)</p>", unsafe_allow_html=True)
+            with col4:
+                if st.button('다음 ▶️', key='upbit_next'):
+                    if st.session_state.upbit_page < total_pages:
+                        st.session_state.upbit_page += 1
+            with col5:
+                if st.button('끝 ⏭️', key='upbit_last'):
+                    st.session_state.upbit_page = total_pages
 
             start_idx = (st.session_state.upbit_page - 1) * page_size
             end_idx = start_idx + page_size
@@ -671,13 +681,23 @@ def main():
             if 'ai_page' not in st.session_state:
                 st.session_state.ai_page = 1
 
-            col1, col2, col3 = st.columns([1, 2, 1])
+            col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
+            with col1:
+                if st.button('⏮️ 처음', key='ai_first'):
+                    st.session_state.ai_page = 1
             with col2:
-                st.session_state.ai_page = st.number_input(
-                    f'페이지 (총 {ai_total_pages}페이지, {len(ai_display_df)}건)',
-                    min_value=1, max_value=ai_total_pages, value=st.session_state.ai_page,
-                    key='ai_page_input'
-                )
+                if st.button('◀️ 이전', key='ai_prev'):
+                    if st.session_state.ai_page > 1:
+                        st.session_state.ai_page -= 1
+            with col3:
+                st.markdown(f"<p style='text-align:center; margin-top:8px;'>{st.session_state.ai_page} / {ai_total_pages} 페이지 ({len(ai_display_df)}건)</p>", unsafe_allow_html=True)
+            with col4:
+                if st.button('다음 ▶️', key='ai_next'):
+                    if st.session_state.ai_page < ai_total_pages:
+                        st.session_state.ai_page += 1
+            with col5:
+                if st.button('끝 ⏭️', key='ai_last'):
+                    st.session_state.ai_page = ai_total_pages
 
             ai_start_idx = (st.session_state.ai_page - 1) * ai_page_size
             ai_end_idx = ai_start_idx + ai_page_size
