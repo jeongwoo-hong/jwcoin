@@ -102,30 +102,35 @@ def scheduled_trade():
             "volume_ratio": indicators["volume_ratio"]
         }
 
-        # 이전 거래 기록 조회 (7일, 최대 15건, reason 포함)
+        # 이전 거래 기록 조회 (7일, 최대 50건, reason 포함)
         recent_trades = get_recent_trades_with_reasons(days=7, limit=50)
         logger.info(f"Recent trades loaded: {len(recent_trades.split(chr(10)))} records")
 
-        # AI 분석 (이전 기록 포함)
+        # AI 반성 생성
+        reflection = ai_analyzer.generate_reflection(recent_trades, market_data)
+        logger.info("Reflection generated")
+
+        # AI 분석 (이전 기록 + 반성 포함)
         decision = ai_analyzer.scheduled_analysis(
             market_data,
             balance,
             recent_trades=recent_trades,
-            reflection=""  # reason이 이미 recent_trades에 포함됨
+            reflection=reflection
         )
-        
+
         if decision:
             logger.info(f"AI Decision: {decision.decision} ({decision.percentage}%)")
-            logger.info(f"Reason: {decision.reason}")
-            
+            logger.info(f"Reason: {decision.reason[:200]}...")
+
             # 매매 실행
             executor.execute(
                 decision=decision.decision,
                 percentage=decision.percentage,
                 reason=decision.reason,
-                source="scheduled"
+                source="scheduled",
+                reflection=reflection
             )
-            
+
             # 정기 매매 시간 기록 (긴급 트리거 보호용)
             trigger_manager.set_scheduled_trade_time()
         

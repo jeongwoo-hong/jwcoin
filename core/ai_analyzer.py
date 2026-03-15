@@ -75,7 +75,7 @@ class AIAnalyzer:
             logger.error(f"API cost logging error: {e}")
 
     def _call_ai(self, system_prompt: str, user_prompt: str, model: str = "gpt-4.1",
-                 analysis_type: str = "analysis") -> Optional[TradingDecision]:
+                 analysis_type: str = "analysis", max_tokens: int = 2000) -> Optional[TradingDecision]:
         """AI 호출"""
         try:
             response = self.client.chat.completions.create(
@@ -101,7 +101,7 @@ class AIAnalyzer:
                         }
                     }
                 },
-                max_tokens=500
+                max_tokens=max_tokens
             )
 
             # 토큰 사용량 추적 및 비용 계산
@@ -169,40 +169,101 @@ class AIAnalyzer:
 
         return self._call_ai(system_prompt, user_prompt, model="gpt-4.1-mini", analysis_type="손익분석")
 
-    def scheduled_analysis(self, market_data: Dict, balance_info: Dict, 
-                          recent_trades: str = "", reflection: str = "") -> Optional[TradingDecision]:
-        """정기 분석 (4시간마다)"""
-        system_prompt = """당신은 비트코인 투자 전문가입니다.
-원띠(Wonyyotti) 투자 전략을 따릅니다:
-
-1. 차트 위주 매매 - 호재/악재보다 차트 분석 중심
-2. 주요 지지선/저항선 기준 매수/매도 시점 결정
-3. 하루 1-2% 꾸준한 수익 목표
-4. 전체 시드의 20-30%만 투자
-5. 분할 매수/매도 전략
-6. 철저한 리스크 관리
-
-응답 시 percentage는:
-- buy: 사용 가능한 KRW의 몇 %를 매수할지 (1-100)
-- sell: 보유 BTC의 몇 %를 매도할지 (1-100)
-- hold: 0"""
-
-        user_prompt = f"""정기 분석 요청 (4시간 주기)
-
-시장 데이터:
-{json.dumps(market_data, indent=2, default=str)}
-
-보유 현황:
-- BTC: {balance_info.get('btc_balance', 0):.6f}
-- KRW: {balance_info.get('krw_balance', 0):,.0f}
-- 평균 매수가: {balance_info.get('avg_buy_price', 0):,.0f}
-
-최근 거래:
+    def generate_reflection(self, recent_trades: str, market_data: Dict) -> str:
+        """AI 반성 생성"""
+        try:
+            response = self.client.chat.completions.create(
+                model="gpt-4.1-mini",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are an AI trading assistant tasked with analyzing recent trading performance and current market conditions to generate insights and improvements for future trading decisions."
+                    },
+                    {
+                        "role": "user",
+                        "content": f"""
+Recent trading data:
 {recent_trades}
 
-이전 분석 반성:
+Current market data:
+{json.dumps(market_data, indent=2, default=str)}
+
+Please analyze this data and provide:
+1. A brief reflection on the recent trading decisions
+2. Insights on what worked well and what didn't
+3. Suggestions for improvement in future trading decisions
+4. Any patterns or trends you notice in the market data
+
+Limit your response to 250 words or less.
+"""
+                    }
+                ],
+                max_tokens=500
+            )
+
+            # 비용 로깅
+            if response.usage:
+                cost_info = self._calculate_cost(
+                    model="gpt-4.1-mini",
+                    input_tokens=response.usage.prompt_tokens,
+                    output_tokens=response.usage.completion_tokens
+                )
+                self._log_api_cost("gpt-4.1-mini", "reflection", cost_info)
+
+            return response.choices[0].message.content
+        except Exception as e:
+            logger.error(f"Reflection generation error: {e}")
+            return ""
+
+    def scheduled_analysis(self, market_data: Dict, balance_info: Dict,
+                          recent_trades: str = "", reflection: str = "") -> Optional[TradingDecision]:
+        """정기 분석 (4시간마다)"""
+        system_prompt = """You are an expert in Bitcoin investing. Analyze the provided data and determine whether to buy, sell, or hold at the current moment. Consider the following in your analysis:
+
+- Technical indicators and market data (RSI, Bollinger Bands, MACD, volume)
+- Recent trading performance and reflection
+- Overall market sentiment and trends
+
+Particularly important is to always refer to the trading method of 'Wonyyotti', a legendary Korean investor:
+1. Chart-focused trading - prioritize chart analysis over news
+2. Identify key support/resistance levels for entry/exit
+3. Target consistent 1-2% daily gains (compound effect)
+4. Only invest 20-30% of total capital per trade
+5. Use dollar-cost averaging (split buy/sell)
+6. Strict risk management - cut losses when plan fails
+
+Response format:
+1. Decision (buy, sell, or hold)
+2. If 'buy': percentage (1-100) of available KRW to use
+   If 'sell': percentage (1-100) of held BTC to sell
+   If 'hold': set percentage to 0
+3. Detailed reason for your decision including:
+   - Technical indicator analysis (RSI levels, Bollinger Band position, volume trends)
+   - Support/resistance levels identified
+   - Risk assessment
+   - How this aligns with Wonyyotti strategy
+
+Provide your reason in English with thorough technical analysis."""
+
+        user_prompt = f"""Scheduled Analysis Request
+
+Market Data:
+- Current Price: {market_data.get('price', 0):,.0f} KRW
+- RSI(14): {market_data.get('rsi', 0):.2f}
+- Bollinger Bands: Lower {market_data.get('bb_lower', 0):,.0f} | Upper {market_data.get('bb_upper', 0):,.0f}
+- Volume Ratio: {market_data.get('volume_ratio', 1)*100:.1f}% of average
+
+Current Holdings:
+- BTC Balance: {balance_info.get('btc_balance', 0):.6f}
+- KRW Balance: {balance_info.get('krw_balance', 0):,.0f}
+- Average Buy Price: {balance_info.get('avg_buy_price', 0):,.0f} KRW
+
+Recent Trades:
+{recent_trades}
+
+Previous Analysis Reflection:
 {reflection}
 
-종합적으로 분석하고 판단해주세요."""
+Please provide a comprehensive analysis and trading decision."""
 
-        return self._call_ai(system_prompt, user_prompt, model="gpt-4.1", analysis_type="정기분석")
+        return self._call_ai(system_prompt, user_prompt, model="gpt-4.1", analysis_type="정기분석", max_tokens=2000)

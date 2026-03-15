@@ -89,7 +89,7 @@ class TradeExecutor:
     
     def execute(self, decision: str, percentage: int, reason: str,
                 source: str = "scheduled", trigger_reason: str = "",
-                pnl_percentage: float = None) -> bool:
+                pnl_percentage: float = None, reflection: str = "") -> bool:
         """매매 실행"""
         with self.lock:
             is_emergency = source in ["triggered", "stop_loss", "take_profit"]
@@ -136,10 +136,10 @@ class TradeExecutor:
                     self.daily_trades += 1
                     if is_emergency:
                         self.daily_emergency_trades += 1
-                    
+
                     # 로깅
-                    self._log_trade(decision, percentage, reason, source, 
-                                   trigger_reason, pnl_percentage, balance)
+                    self._log_trade(decision, percentage, reason, source,
+                                   trigger_reason, pnl_percentage, balance, reflection)
                     return True
                 
                 return False
@@ -185,13 +185,13 @@ class TradeExecutor:
     
     def _log_trade(self, decision: str, percentage: int, reason: str,
                    source: str, trigger_reason: str, pnl_percentage: float,
-                   balance: Dict):
+                   balance: Dict, reflection: str = ""):
         """거래 로깅"""
         try:
             # 최신 잔고 조회
             time.sleep(1)
             updated_balance = self.get_balance()
-            
+
             data = {
                 "decision": decision,
                 "percentage": percentage,
@@ -202,9 +202,10 @@ class TradeExecutor:
                 "btc_krw_price": updated_balance.get("current_price", balance["current_price"]),
                 "source": source,
                 "trigger_reason": trigger_reason,
-                "pnl_percentage": pnl_percentage
+                "pnl_percentage": pnl_percentage,
+                "reflection": reflection
             }
-            
+
             self.supabase.table("trades").insert(data).execute()
             logger.info(f"Trade logged: {decision} ({source})")
             
