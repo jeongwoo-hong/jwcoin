@@ -9,8 +9,9 @@ import time
 import threading
 import logging
 import schedule
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
+from supabase import create_client, Client
 
 # 환경변수 로드
 load_dotenv()
@@ -29,6 +30,41 @@ from core.triggers import TriggerManager
 from core.pnl_manager import PnLManager
 from core.ai_analyzer import AIAnalyzer
 from core.executor import TradeExecutor
+
+# Supabase 클라이언트
+supabase: Client = create_client(
+    os.getenv("SUPABASE_URL"),
+    os.getenv("SUPABASE_KEY")
+)
+
+def get_recent_trades_with_reasons(days=7, limit=50):
+    """최근 거래 기록 및 판단 이유 조회 (토큰 최적화)"""
+    try:
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        response = supabase.table("trades") \
+            .select("timestamp, decision, percentage, reason, btc_balance, btc_krw_price") \
+            .gte("timestamp", cutoff) \
+            .order("timestamp", desc=True) \
+            .limit(limit) \
+            .execute()
+
+        if response.data:
+            trades_text = []
+            for t in response.data:
+                # reason을 80자로 제한 (토큰 절약)
+                reason = t.get('reason', '') or ''
+                reason_short = reason[:80] + '...' if len(reason) > 80 else reason
+
+                trades_text.append(
+                    f"[{t['timestamp'][5:16]}] {t['decision'].upper()} {t['percentage']}% "
+                    f"| BTC:{t['btc_balance']:.4f} @{t['btc_krw_price']/1000000:.1f}M "
+                    f"| {reason_short}"
+                )
+            return "\n".join(trades_text)
+        return "최근 거래 없음"
+    except Exception as e:
+        logger.error(f"Recent trades fetch error: {e}")
+        return "조회 실패"
 
 # 전역 객체
 trigger_manager = TriggerManager()
@@ -65,9 +101,18 @@ def scheduled_trade():
             "bb_lower": indicators["bb_lower"],
             "volume_ratio": indicators["volume_ratio"]
         }
-        
-        # AI 분석
-        decision = ai_analyzer.scheduled_analysis(market_data, balance)
+
+        # 이전 거래 기록 조회 (7일, 최대 15건, reason 포함)
+        recent_trades = get_recent_trades_with_reasons(days=7, limit=50)
+        logger.info(f"Recent trades loaded: {len(recent_trades.split(chr(10)))} records")
+
+        # AI 분석 (이전 기록 포함)
+        decision = ai_analyzer.scheduled_analysis(
+            market_data,
+            balance,
+            recent_trades=recent_trades,
+            reflection=""  # reason이 이미 recent_trades에 포함됨
+        )
         
         if decision:
             logger.info(f"AI Decision: {decision.decision} ({decision.percentage}%)")
