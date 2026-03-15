@@ -55,6 +55,28 @@ def get_trades_from_supabase(days=30):
         return pd.DataFrame()
 
 @st.cache_data(ttl=300)
+def get_upbit_orders(market="KRW-BTC"):
+    """업비트 체결 내역 조회"""
+    upbit = get_upbit_client()
+    if not upbit:
+        return pd.DataFrame()
+    try:
+        orders = upbit.get_order(market, state="done")
+        if not orders:
+            return pd.DataFrame()
+        df = pd.DataFrame(orders)
+        df['created_at'] = pd.to_datetime(df['created_at'])
+        ts = df['created_at']
+        df['created_at'] = ts.dt.tz_convert('Asia/Seoul') if ts.dt.tz is not None else ts.dt.tz_localize('UTC').dt.tz_convert('Asia/Seoul')
+        numeric_cols = ['volume', 'price', 'executed_volume', 'paid_fee']
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+        return df.sort_values('created_at', ascending=False)
+    except:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=300)
 def get_deposits_from_upbit():
     upbit = get_upbit_client()
     if not upbit:
@@ -631,7 +653,7 @@ def main():
 
     # ===== 기록 탭 =====
     st.markdown("## 📋 기록")
-    tab1, tab2, tab3 = st.tabs(["거래", "입출금", "비용"])
+    tab1, tab2, tab3, tab4 = st.tabs(["거래", "체결내역", "입출금", "비용"])
 
     with tab1:
         if not trades_df.empty:
@@ -652,7 +674,37 @@ def main():
             if 'trigger_reason' in trades_df.columns:
                 cols.append('trigger_reason')
 
-            display = trades_df[[c for c in cols if c in trades_df.columns]].head(20).copy()
+            # 페이지네이션 설정
+            page_size = 20
+            total_records = len(trades_df)
+            total_pages = max(1, (total_records + page_size - 1) // page_size)
+
+            if 'trades_page' not in st.session_state:
+                st.session_state.trades_page = 1
+
+            # 페이지네이션 버튼
+            col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
+            with col1:
+                if st.button('⏮️', key='trades_first', help='처음'):
+                    st.session_state.trades_page = 1
+            with col2:
+                if st.button('◀️', key='trades_prev', help='이전'):
+                    if st.session_state.trades_page > 1:
+                        st.session_state.trades_page -= 1
+            with col3:
+                st.markdown(f"<p style='text-align:center; margin-top:8px;'>{st.session_state.trades_page} / {total_pages} ({total_records}건)</p>", unsafe_allow_html=True)
+            with col4:
+                if st.button('▶️', key='trades_next', help='다음'):
+                    if st.session_state.trades_page < total_pages:
+                        st.session_state.trades_page += 1
+            with col5:
+                if st.button('⏭️', key='trades_last', help='끝'):
+                    st.session_state.trades_page = total_pages
+
+            start_idx = (st.session_state.trades_page - 1) * page_size
+            end_idx = start_idx + page_size
+
+            display = trades_df[[c for c in cols if c in trades_df.columns]].iloc[start_idx:end_idx].copy()
             display['timestamp'] = display['timestamp'].dt.strftime('%m/%d %H:%M')
             display['decision'] = display['decision'].map({'buy': '🟢매수', 'sell': '🔴매도', 'hold': '⚪홀드', 'partial_sell': '🟡부분매도'})
 
@@ -700,13 +752,91 @@ def main():
                         st.success(translate_to_korean(trades_df.iloc[idx]['reason']))
 
     with tab2:
+        # 업비트 체결 내역
+        orders_df = get_upbit_orders()
+        if not orders_df.empty:
+            ord_display = orders_df.copy()
+            ord_display['created_at'] = ord_display['created_at'].dt.strftime('%m/%d %H:%M')
+            ord_display['side'] = ord_display['side'].map({'bid': '🟢매수', 'ask': '🔴매도'})
+            ord_display['price'] = ord_display['price'].apply(lambda x: f"₩{x:,.0f}" if pd.notna(x) else "-")
+            ord_display['executed_volume'] = ord_display['executed_volume'].apply(lambda x: f"{x:.6f}")
+            ord_display['paid_fee'] = ord_display['paid_fee'].apply(lambda x: f"₩{x:,.0f}" if pd.notna(x) else "-")
+
+            # 페이지네이션
+            ord_page_size = 20
+            ord_total = len(ord_display)
+            ord_total_pages = max(1, (ord_total + ord_page_size - 1) // ord_page_size)
+
+            if 'ord_page' not in st.session_state:
+                st.session_state.ord_page = 1
+
+            col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
+            with col1:
+                if st.button('⏮️', key='ord_first', help='처음'):
+                    st.session_state.ord_page = 1
+            with col2:
+                if st.button('◀️', key='ord_prev', help='이전'):
+                    if st.session_state.ord_page > 1:
+                        st.session_state.ord_page -= 1
+            with col3:
+                st.markdown(f"<p style='text-align:center; margin-top:8px;'>{st.session_state.ord_page} / {ord_total_pages} ({ord_total}건)</p>", unsafe_allow_html=True)
+            with col4:
+                if st.button('▶️', key='ord_next', help='다음'):
+                    if st.session_state.ord_page < ord_total_pages:
+                        st.session_state.ord_page += 1
+            with col5:
+                if st.button('⏭️', key='ord_last', help='끝'):
+                    st.session_state.ord_page = ord_total_pages
+
+            ord_start = (st.session_state.ord_page - 1) * ord_page_size
+            ord_end = ord_start + ord_page_size
+
+            st.dataframe(
+                ord_display[['created_at', 'side', 'price', 'executed_volume', 'paid_fee']].iloc[ord_start:ord_end],
+                use_container_width=True, hide_index=True,
+                column_config={'created_at': '시간', 'side': '구분', 'price': '체결가', 'executed_volume': '체결량(BTC)', 'paid_fee': '수수료'}
+            )
+        else:
+            st.info("체결 내역 없음")
+
+    with tab3:
         if not deposits_df.empty:
             dep = deposits_df.copy()
             dep['created_at'] = dep['created_at'].dt.strftime('%m/%d %H:%M')
             dep['type'] = dep['type'].map({'deposit': '🟢입금', 'withdraw': '🔴출금'})
             dep['amount'] = dep['amount'].apply(lambda x: f"₩{x:,.0f}")
             dep['source'] = dep['memo'].apply(lambda x: '업비트' if '업비트' in str(x) else '수동')
-            st.dataframe(dep[['created_at', 'type', 'amount', 'source', 'memo']], use_container_width=True, hide_index=True, column_config={'created_at': '시간', 'type': '유형', 'amount': '금액', 'source': '출처', 'memo': '메모'})
+
+            # 페이지네이션
+            dep_page_size = 20
+            dep_total = len(dep)
+            dep_total_pages = max(1, (dep_total + dep_page_size - 1) // dep_page_size)
+
+            if 'dep_page' not in st.session_state:
+                st.session_state.dep_page = 1
+
+            col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
+            with col1:
+                if st.button('⏮️', key='dep_first', help='처음'):
+                    st.session_state.dep_page = 1
+            with col2:
+                if st.button('◀️', key='dep_prev', help='이전'):
+                    if st.session_state.dep_page > 1:
+                        st.session_state.dep_page -= 1
+            with col3:
+                st.markdown(f"<p style='text-align:center; margin-top:8px;'>{st.session_state.dep_page} / {dep_total_pages} ({dep_total}건)</p>", unsafe_allow_html=True)
+            with col4:
+                if st.button('▶️', key='dep_next', help='다음'):
+                    if st.session_state.dep_page < dep_total_pages:
+                        st.session_state.dep_page += 1
+            with col5:
+                if st.button('⏭️', key='dep_last', help='끝'):
+                    st.session_state.dep_page = dep_total_pages
+
+            dep_start = (st.session_state.dep_page - 1) * dep_page_size
+            dep_end = dep_start + dep_page_size
+
+            st.dataframe(dep[['created_at', 'type', 'amount', 'source', 'memo']].iloc[dep_start:dep_end], use_container_width=True, hide_index=True, column_config={'created_at': '시간', 'type': '유형', 'amount': '금액', 'source': '출처', 'memo': '메모'})
 
             manual = get_manual_deposits()
             if not manual.empty:
@@ -719,14 +849,44 @@ def main():
         else:
             st.info("입출금 기록 없음")
 
-    with tab3:
+    with tab4:
         if not expenses_df.empty:
             exp = expenses_df.copy()
             exp['created_at'] = exp['created_at'].dt.strftime('%m/%d %H:%M')
             exp['category'] = exp['category'].map({'api': '🔴API', 'server': '🟢서버', 'other': '⚪기타'})
             exp['period'] = exp['period'].map({'monthly': '월', 'daily': '일', 'yearly': '연', 'one-time': '1회'})
             exp['amount'] = exp['amount'].apply(lambda x: f"₩{x:,.0f}")
-            st.dataframe(exp[['id', 'created_at', 'category', 'name', 'amount', 'period']], use_container_width=True, hide_index=True, column_config={'id': 'ID', 'created_at': '등록', 'category': '분류', 'name': '항목', 'amount': '금액', 'period': '주기'})
+
+            # 페이지네이션
+            exp_page_size = 20
+            exp_total = len(exp)
+            exp_total_pages = max(1, (exp_total + exp_page_size - 1) // exp_page_size)
+
+            if 'exp_page' not in st.session_state:
+                st.session_state.exp_page = 1
+
+            col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
+            with col1:
+                if st.button('⏮️', key='exp_first', help='처음'):
+                    st.session_state.exp_page = 1
+            with col2:
+                if st.button('◀️', key='exp_prev', help='이전'):
+                    if st.session_state.exp_page > 1:
+                        st.session_state.exp_page -= 1
+            with col3:
+                st.markdown(f"<p style='text-align:center; margin-top:8px;'>{st.session_state.exp_page} / {exp_total_pages} ({exp_total}건)</p>", unsafe_allow_html=True)
+            with col4:
+                if st.button('▶️', key='exp_next', help='다음'):
+                    if st.session_state.exp_page < exp_total_pages:
+                        st.session_state.exp_page += 1
+            with col5:
+                if st.button('⏭️', key='exp_last', help='끝'):
+                    st.session_state.exp_page = exp_total_pages
+
+            exp_start = (st.session_state.exp_page - 1) * exp_page_size
+            exp_end = exp_start + exp_page_size
+
+            st.dataframe(exp[['id', 'created_at', 'category', 'name', 'amount', 'period']].iloc[exp_start:exp_end], use_container_width=True, hide_index=True, column_config={'id': 'ID', 'created_at': '등록', 'category': '분류', 'name': '항목', 'amount': '금액', 'period': '주기'})
 
             with st.expander("비용 삭제"):
                 del_id = st.number_input("삭제 ID", min_value=1, step=1, key="del_exp")
