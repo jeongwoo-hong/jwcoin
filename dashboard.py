@@ -542,7 +542,7 @@ def main():
             )
 
         with col3:
-            if st.button("🔄 새로고침", use_container_width=True):
+            if st.button("🔄 새로고침", width='stretch'):
                 st.cache_data.clear()
                 st.rerun()
 
@@ -562,7 +562,7 @@ def main():
                 dep_amt = st.number_input("금액", min_value=0, step=10000, key="dep_amt")
             with dep_col2:
                 dep_memo = st.text_input("메모", key="dep_memo")
-                if st.button("입출금 추가", key="add_dep", use_container_width=True):
+                if st.button("입출금 추가", key="add_dep", width='stretch'):
                     if dep_amt > 0 and add_deposit(dep_amt, dep_type, dep_memo):
                         st.success("완료")
                         st.cache_data.clear()
@@ -578,7 +578,7 @@ def main():
             with exp_col2:
                 exp_period = st.selectbox("주기", ["monthly", "daily", "yearly", "one-time"], format_func=lambda x: {"monthly": "월", "daily": "일", "yearly": "연", "one-time": "1회"}[x], key="exp_period")
                 exp_memo = st.text_input("메모 (선택)", key="exp_memo")
-                if st.button("비용 추가", key="add_exp", use_container_width=True):
+                if st.button("비용 추가", key="add_exp", width='stretch'):
                     if exp_amt > 0 and exp_name and add_expense(exp_cat, exp_name, exp_amt, exp_period, exp_memo):
                         st.success("완료")
                         st.cache_data.clear()
@@ -634,22 +634,22 @@ def main():
     c1, c2 = st.columns(2)
     with c1:
         st.caption(f"자산 증감 ({chart_start_date} 이후)")
-        st.plotly_chart(create_asset_chart(trades_df, deposits_df, btc_price, chart_start_date), use_container_width=True, config={'displayModeBar': False})
+        st.plotly_chart(create_asset_chart(trades_df, deposits_df, btc_price, chart_start_date), width='stretch', config={'displayModeBar': False})
     with c2:
         st.caption(f"실질 수익 추이 ({chart_start_date} 이후)")
-        st.plotly_chart(create_profit_chart(trades_df, deposits_df, btc_price, chart_start_date), use_container_width=True, config={'displayModeBar': False})
+        st.plotly_chart(create_profit_chart(trades_df, deposits_df, btc_price, chart_start_date), width='stretch', config={'displayModeBar': False})
 
     # 하단: 3개 차트
     c1, c2, c3 = st.columns(3)
     with c1:
         st.caption("BTC 보유량")
-        st.plotly_chart(create_btc_chart(trades_df), use_container_width=True, config={'displayModeBar': False})
+        st.plotly_chart(create_btc_chart(trades_df), width='stretch', config={'displayModeBar': False})
     with c2:
         st.caption("거래 결정")
-        st.plotly_chart(create_decision_chart(trades_df), use_container_width=True, config={'displayModeBar': False})
+        st.plotly_chart(create_decision_chart(trades_df), width='stretch', config={'displayModeBar': False})
     with c3:
         st.caption("비용 분포")
-        st.plotly_chart(create_expense_chart(perf.get('expenses_by_cat', {})), use_container_width=True, config={'displayModeBar': False})
+        st.plotly_chart(create_expense_chart(perf.get('expenses_by_cat', {})), width='stretch', config={'displayModeBar': False})
 
     # ===== 기록 탭 =====
     st.markdown("## 📋 기록")
@@ -742,7 +742,7 @@ def main():
             }
             display.columns = [col_names.get(c, c) for c in display.columns]
 
-            st.dataframe(display, use_container_width=True, hide_index=True, height=450)
+            st.dataframe(display, width='stretch', hide_index=True, height=450)
 
             # 번역
             with st.expander("🌐 번역"):
@@ -793,7 +793,7 @@ def main():
 
             st.dataframe(
                 ord_display[['created_at', 'side', 'price', 'executed_volume', 'paid_fee']].iloc[ord_start:ord_end],
-                use_container_width=True, hide_index=True,
+                width='stretch', hide_index=True,
                 column_config={'created_at': '시간', 'side': '구분', 'price': '체결가', 'executed_volume': '체결량(BTC)', 'paid_fee': '수수료'}
             )
         else:
@@ -836,7 +836,7 @@ def main():
             dep_start = (st.session_state.dep_page - 1) * dep_page_size
             dep_end = dep_start + dep_page_size
 
-            st.dataframe(dep[['created_at', 'type', 'amount', 'source', 'memo']].iloc[dep_start:dep_end], use_container_width=True, hide_index=True, column_config={'created_at': '시간', 'type': '유형', 'amount': '금액', 'source': '출처', 'memo': '메모'})
+            st.dataframe(dep[['created_at', 'type', 'amount', 'source', 'memo']].iloc[dep_start:dep_end], width='stretch', hide_index=True, column_config={'created_at': '시간', 'type': '유형', 'amount': '금액', 'source': '출처', 'memo': '메모'})
 
             manual = get_manual_deposits()
             if not manual.empty:
@@ -886,7 +886,7 @@ def main():
             exp_start = (st.session_state.exp_page - 1) * exp_page_size
             exp_end = exp_start + exp_page_size
 
-            st.dataframe(exp[['id', 'created_at', 'category', 'name', 'amount', 'period']].iloc[exp_start:exp_end], use_container_width=True, hide_index=True, column_config={'id': 'ID', 'created_at': '등록', 'category': '분류', 'name': '항목', 'amount': '금액', 'period': '주기'})
+            st.dataframe(exp[['id', 'created_at', 'category', 'name', 'amount', 'period']].iloc[exp_start:exp_end], width='stretch', hide_index=True, column_config={'id': 'ID', 'created_at': '등록', 'category': '분류', 'name': '항목', 'amount': '금액', 'period': '주기'})
 
             with st.expander("비용 삭제"):
                 del_id = st.number_input("삭제 ID", min_value=1, step=1, key="del_exp")
