@@ -615,40 +615,73 @@ def main():
     # 거래 내역 테이블
     if not trades_df.empty:
         st.header('📜 최근 거래 내역')
-        
+
         # 표시할 컬럼 선택
         display_cols = ['created_at', 'side', 'ord_type', 'price', 'executed_volume', 'paid_fee', 'state']
         if all(col in trades_df.columns for col in display_cols):
             display_df = trades_df[display_cols].copy()
-            
+
             # 컬럼명 한글화
             display_df.columns = ['거래시간', '구분', '주문타입', '체결가격', '체결수량', '수수료', '상태']
-            
+
             # 데이터 포맷팅
             display_df['구분'] = display_df['구분'].apply(format_side)
             display_df['주문타입'] = display_df['주문타입'].apply(format_order_type)
             display_df['체결가격'] = display_df['체결가격'].apply(lambda x: f"{x:,.0f}원")
             display_df['체결수량'] = display_df['체결수량'].apply(lambda x: f"{x:.6f} BTC")
             display_df['수수료'] = display_df['수수료'].apply(lambda x: f"{x:,.0f}원")
-            
-            # 최근 20건만 표시
-            st.dataframe(display_df.head(20), use_container_width=True)
+
+            # 페이지네이션
+            page_size = 20
+            total_pages = max(1, (len(display_df) + page_size - 1) // page_size)
+
+            if 'upbit_page' not in st.session_state:
+                st.session_state.upbit_page = 1
+
+            col1, col2, col3 = st.columns([1, 2, 1])
+            with col2:
+                st.session_state.upbit_page = st.number_input(
+                    f'페이지 (총 {total_pages}페이지, {len(display_df)}건)',
+                    min_value=1, max_value=total_pages, value=st.session_state.upbit_page,
+                    key='upbit_page_input'
+                )
+
+            start_idx = (st.session_state.upbit_page - 1) * page_size
+            end_idx = start_idx + page_size
+            st.dataframe(display_df.iloc[start_idx:end_idx], use_container_width=True)
         else:
             st.dataframe(trades_df.head(20), use_container_width=True)
     
     # AI 트레이딩 기록 (Supabase)
     if data_source in ["Supabase", "통합"]:
-        st.header('AI 트레이딩 기록')
+        st.header('🤖 AI 트레이딩 기록')
 
         if not supabase_trades.empty:
             # 표시할 컬럼
             display_cols = ['timestamp', 'decision', 'percentage', 'reason', 'btc_balance', 'krw_balance']
             available_cols = [col for col in display_cols if col in supabase_trades.columns]
 
-            display_df = supabase_trades[available_cols].head(10).copy()
-            display_df.columns = ['시간', '결정', '비율(%)', '이유', 'BTC 잔고', 'KRW 잔고'][:len(available_cols)]
+            ai_display_df = supabase_trades[available_cols].copy()
+            ai_display_df.columns = ['시간', '결정', '비율(%)', '이유', 'BTC 잔고', 'KRW 잔고'][:len(available_cols)]
 
-            st.dataframe(display_df, use_container_width=True)
+            # 페이지네이션
+            ai_page_size = 20
+            ai_total_pages = max(1, (len(ai_display_df) + ai_page_size - 1) // ai_page_size)
+
+            if 'ai_page' not in st.session_state:
+                st.session_state.ai_page = 1
+
+            col1, col2, col3 = st.columns([1, 2, 1])
+            with col2:
+                st.session_state.ai_page = st.number_input(
+                    f'페이지 (총 {ai_total_pages}페이지, {len(ai_display_df)}건)',
+                    min_value=1, max_value=ai_total_pages, value=st.session_state.ai_page,
+                    key='ai_page_input'
+                )
+
+            ai_start_idx = (st.session_state.ai_page - 1) * ai_page_size
+            ai_end_idx = ai_start_idx + ai_page_size
+            st.dataframe(ai_display_df.iloc[ai_start_idx:ai_end_idx], use_container_width=True)
         else:
             st.info("AI 트레이딩 기록이 없습니다.")
     
