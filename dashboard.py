@@ -76,6 +76,19 @@ def get_upbit_orders(market="KRW-BTC"):
     except:
         return pd.DataFrame()
 
+def get_trading_fees(orders_df, days=30):
+    """조회 기간 내 거래 수수료 합계"""
+    if orders_df.empty:
+        return 0
+    try:
+        cutoff = datetime.now(KST) - timedelta(days=days)
+        recent = orders_df[orders_df['created_at'] >= cutoff]
+        if 'paid_fee' in recent.columns:
+            return recent['paid_fee'].sum()
+        return 0
+    except:
+        return 0
+
 @st.cache_data(ttl=300)
 def get_deposits_from_upbit():
     upbit = get_upbit_client()
@@ -230,28 +243,33 @@ def format_krw(value):
     except:
         return str(value)
 
-def calculate_monthly_expenses(expenses_df, days=30):
-    if expenses_df.empty:
-        return 0, {}
+def calculate_monthly_expenses(expenses_df, trading_fees=0, days=30):
     total = 0
-    by_cat = {'api': 0, 'server': 0, 'other': 0}
-    for _, row in expenses_df.iterrows():
-        amount = float(row['amount'])
-        period = row.get('period', 'monthly')
-        cat = row.get('category', 'other')
-        if period == 'monthly':
-            monthly = amount
-        elif period == 'daily':
-            monthly = amount * 30
-        elif period == 'yearly':
-            monthly = amount / 12
-        else:
-            monthly = amount * (30 / days)
-        total += monthly
-        by_cat[cat] = by_cat.get(cat, 0) + monthly
+    by_cat = {'api': 0, 'server': 0, 'trading_fee': 0, 'other': 0}
+
+    # 거래 수수료 추가 (조회 기간 기준 월간 환산)
+    monthly_trading_fee = trading_fees * (30 / days) if days > 0 else trading_fees
+    by_cat['trading_fee'] = monthly_trading_fee
+    total += monthly_trading_fee
+
+    if not expenses_df.empty:
+        for _, row in expenses_df.iterrows():
+            amount = float(row['amount'])
+            period = row.get('period', 'monthly')
+            cat = row.get('category', 'other')
+            if period == 'monthly':
+                monthly = amount
+            elif period == 'daily':
+                monthly = amount * 30
+            elif period == 'yearly':
+                monthly = amount / 12
+            else:
+                monthly = amount * (30 / days)
+            total += monthly
+            by_cat[cat] = by_cat.get(cat, 0) + monthly
     return total, by_cat
 
-def calculate_performance(trades_df, deposits_df, expenses_df, current_btc_price, days=30):
+def calculate_performance(trades_df, deposits_df, expenses_df, current_btc_price, days=30, trading_fees=0):
     if trades_df.empty:
         return {}
 
@@ -267,8 +285,8 @@ def calculate_performance(trades_df, deposits_df, expenses_df, current_btc_price
     total_wd = deposits_df[deposits_df['type'] == 'withdraw']['amount'].sum() if not deposits_df.empty else 0
     net_dep = total_dep - total_wd
 
-    # 월간 비용
-    monthly_exp, exp_by_cat = calculate_monthly_expenses(expenses_df, days)
+    # 월간 비용 (거래 수수료 포함)
+    monthly_exp, exp_by_cat = calculate_monthly_expenses(expenses_df, trading_fees, days)
 
     # 실질 수익 = 현재 총자산 - 순입금액
     real_profit = current_total - net_dep
@@ -455,8 +473,8 @@ def create_expense_chart(by_cat):
         fig.add_annotation(text="비용 없음", xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
         fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=180, template='plotly_dark')
         return fig
-    labels_map = {'api': 'API', 'server': '서버', 'other': '기타'}
-    colors_map = {'api': '#FF6B6B', 'server': '#4ECDC4', 'other': '#95A5A6'}
+    labels_map = {'api': 'API', 'server': '서버', 'trading_fee': '거래수수료', 'other': '기타'}
+    colors_map = {'api': '#FF6B6B', 'server': '#4ECDC4', 'trading_fee': '#F7931A', 'other': '#95A5A6'}
     labels, values, colors = [], [], []
     for cat, val in by_cat.items():
         if val > 0:
@@ -590,6 +608,8 @@ def main():
     trades_df = get_trades_from_supabase(days)
     deposits_df = get_all_deposits()
     expenses_df = get_expenses()
+    orders_df = get_upbit_orders()
+    trading_fees = get_trading_fees(orders_df, days)
     btc_price = get_current_btc_price()
 
     # ===== 헤더 =====
@@ -604,8 +624,8 @@ def main():
         st.warning("거래 기록이 없습니다.")
         st.stop()
 
-    # 성과 계산 (현재 BTC 가격 기준)
-    perf = calculate_performance(trades_df, deposits_df, expenses_df, btc_price, days)
+    # 성과 계산 (현재 BTC 가격 기준, 거래 수수료 포함)
+    perf = calculate_performance(trades_df, deposits_df, expenses_df, btc_price, days, trading_fees)
     latest = trades_df.iloc[0]
     btc_val = latest['btc_balance'] * (btc_price or latest['btc_krw_price'])
     total_asset = latest['krw_balance'] + btc_val
@@ -706,6 +726,33 @@ def main():
 
             display = trades_df[[c for c in cols if c in trades_df.columns]].iloc[start_idx:end_idx].copy()
             display['timestamp'] = display['timestamp'].dt.strftime('%m/%d %H:%M')
+
+            # 거래 금액 계산 (추정)
+            def calc_trade_amount(row):
+                decision = row['decision']
+                pct = row['percentage']
+                if decision == 'buy':
+                    # 매수 시: KRW 잔고 기준 (거래 후 잔고이므로 역산)
+                    krw = row['krw_balance']
+                    # 거래 전 KRW ≈ 거래 후 KRW / (1 - pct/100)
+                    if pct < 100:
+                        krw_before = krw / (1 - pct/100)
+                        return krw_before - krw
+                    return 0
+                elif decision in ['sell', 'partial_sell']:
+                    # 매도 시: BTC * 가격
+                    btc = row['btc_balance']
+                    price = row['btc_krw_price']
+                    # 거래 전 BTC ≈ 거래 후 BTC / (1 - pct/100)
+                    if pct < 100:
+                        btc_before = btc / (1 - pct/100)
+                        return (btc_before - btc) * price
+                    return btc * price
+                return 0
+
+            display['trade_amount'] = display.apply(calc_trade_amount, axis=1)
+            display['trade_amount'] = display['trade_amount'].apply(lambda x: f"₩{x:,.0f}" if x > 0 else "-")
+
             display['decision'] = display['decision'].map({'buy': '🟢매수', 'sell': '🔴매도', 'hold': '⚪홀드', 'partial_sell': '🟡부분매도'})
 
             # source 포맷팅
@@ -725,31 +772,55 @@ def main():
 
             display['btc_balance'] = display['btc_balance'].apply(lambda x: f"{x:.4f}")
             display['btc_krw_price'] = display['btc_krw_price'].apply(lambda x: f"{x:,.0f}")
-            display['reason'] = display['reason'].apply(lambda x: str(x)[:40] + '...' if len(str(x)) > 40 else x)
 
-            # trigger_reason 포맷팅
+            # reason, trigger_reason은 자르지 않음 (전체 표시)
+            display['reason'] = display['reason'].apply(lambda x: str(x) if pd.notna(x) else "-")
+
             if 'trigger_reason' in display.columns:
                 display['trigger_reason'] = display['trigger_reason'].apply(
-                    lambda x: str(x)[:30] + '...' if pd.notna(x) and len(str(x)) > 30 else (x if pd.notna(x) else "-")
+                    lambda x: str(x) if pd.notna(x) and str(x).strip() else "-"
                 )
 
             # 컬럼명 변경
             col_names = {
                 'timestamp': '시간', 'decision': '결정', 'percentage': '%',
-                'source': '출처', 'pnl_percentage': '손익',
+                'trade_amount': '거래금액', 'source': '출처', 'pnl_percentage': '손익',
                 'btc_balance': 'BTC', 'btc_krw_price': '가격',
                 'reason': '이유', 'trigger_reason': '트리거'
             }
             display.columns = [col_names.get(c, c) for c in display.columns]
 
-            st.dataframe(display, width='stretch', hide_index=True, height=450)
+            st.dataframe(
+                display,
+                width='stretch',
+                hide_index=True,
+                height=450,
+                column_config={
+                    '이유': st.column_config.TextColumn('이유', width='large', help='클릭하여 전체 내용 보기'),
+                    '트리거': st.column_config.TextColumn('트리거', width='medium', help='클릭하여 전체 내용 보기'),
+                }
+            )
 
-            # 번역
-            with st.expander("🌐 번역"):
-                idx = st.selectbox("거래 선택", range(min(20, len(trades_df))), format_func=lambda i: f"{trades_df.iloc[i]['timestamp'].strftime('%m/%d %H:%M')} - {trades_df.iloc[i]['decision']}")
-                if st.button("번역", key="tr_reason"):
+            # 상세 보기 (선택한 거래의 전체 reason/trigger 표시)
+            with st.expander("📋 상세 보기 & 번역"):
+                page_trades = trades_df.iloc[start_idx:end_idx]
+                idx = st.selectbox(
+                    "거래 선택",
+                    range(len(page_trades)),
+                    format_func=lambda i: f"{page_trades.iloc[i]['timestamp'].strftime('%m/%d %H:%M')} - {page_trades.iloc[i]['decision']}"
+                )
+                selected = page_trades.iloc[idx]
+
+                st.markdown("**이유 (Reason):**")
+                st.text_area("", value=str(selected.get('reason', '-')), height=150, disabled=True, key="reason_view")
+
+                if 'trigger_reason' in selected and pd.notna(selected['trigger_reason']) and str(selected['trigger_reason']).strip():
+                    st.markdown("**트리거 (Trigger):**")
+                    st.text_area("", value=str(selected['trigger_reason']), height=80, disabled=True, key="trigger_view")
+
+                if st.button("🌐 번역", key="tr_reason"):
                     with st.spinner("번역 중..."):
-                        st.success(translate_to_korean(trades_df.iloc[idx]['reason']))
+                        st.success(translate_to_korean(str(selected.get('reason', ''))))
 
     with tab2:
         # 업비트 체결 내역
