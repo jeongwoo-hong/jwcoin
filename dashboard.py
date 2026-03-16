@@ -724,33 +724,36 @@ def main():
             start_idx = (st.session_state.trades_page - 1) * page_size
             end_idx = start_idx + page_size
 
-            display = trades_df[[c for c in cols if c in trades_df.columns]].iloc[start_idx:end_idx].copy()
-            display['timestamp'] = display['timestamp'].dt.strftime('%m/%d %H:%M')
-
-            # 거래 금액 계산 (추정)
+            # 거래 금액 계산 (추정) - 원본 데이터에서 계산
             def calc_trade_amount(row):
-                decision = row['decision']
-                pct = row['percentage']
-                if decision == 'buy':
-                    # 매수 시: KRW 잔고 기준 (거래 후 잔고이므로 역산)
-                    krw = row['krw_balance']
-                    # 거래 전 KRW ≈ 거래 후 KRW / (1 - pct/100)
-                    if pct < 100:
-                        krw_before = krw / (1 - pct/100)
-                        return krw_before - krw
+                try:
+                    decision = row['decision']
+                    pct = row['percentage']
+                    if decision == 'buy':
+                        krw = row['krw_balance']
+                        if pct < 100 and pct > 0:
+                            krw_before = krw / (1 - pct/100)
+                            return krw_before - krw
+                        return 0
+                    elif decision in ['sell', 'partial_sell']:
+                        btc = row['btc_balance']
+                        price = row['btc_krw_price']
+                        if pct < 100 and pct > 0:
+                            btc_before = btc / (1 - pct/100)
+                            return (btc_before - btc) * price
+                        return btc * price
                     return 0
-                elif decision in ['sell', 'partial_sell']:
-                    # 매도 시: BTC * 가격
-                    btc = row['btc_balance']
-                    price = row['btc_krw_price']
-                    # 거래 전 BTC ≈ 거래 후 BTC / (1 - pct/100)
-                    if pct < 100:
-                        btc_before = btc / (1 - pct/100)
-                        return (btc_before - btc) * price
-                    return btc * price
-                return 0
+                except:
+                    return 0
 
-            display['trade_amount'] = display.apply(calc_trade_amount, axis=1)
+            # 원본에서 거래금액 계산
+            page_data = trades_df.iloc[start_idx:end_idx].copy()
+            page_data['trade_amount'] = page_data.apply(calc_trade_amount, axis=1)
+
+            # 표시할 컬럼 선택
+            display = page_data[[c for c in cols if c in page_data.columns]].copy()
+            display['trade_amount'] = page_data['trade_amount']
+            display['timestamp'] = display['timestamp'].dt.strftime('%m/%d %H:%M')
             display['trade_amount'] = display['trade_amount'].apply(lambda x: f"₩{x:,.0f}" if x > 0 else "-")
 
             display['decision'] = display['decision'].map({'buy': '🟢매수', 'sell': '🔴매도', 'hold': '⚪홀드', 'partial_sell': '🟡부분매도'})
