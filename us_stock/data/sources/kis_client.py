@@ -5,12 +5,12 @@ https://apiportal.koreainvestment.com/
 import os
 import json
 import time
+import logging
 import requests
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
-from ..sources import logger
 
-logger = __import__('logging').getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class KISClient:
