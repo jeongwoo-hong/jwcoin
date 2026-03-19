@@ -31,22 +31,29 @@ SCHEDULE = {
 # =============================================================================
 
 RISK_PARAMS = {
-    # 포지션 사이징
-    "max_position_pct": 0.05,         # 단일 종목 최대 5%
-    "max_position_pct_high_conviction": 0.08,  # 고확신 시 최대 8%
+    # 포지션 사이징 - 2026-03-19 개선: 확신도 기반 동적 포지션
+    "max_position_pct": 0.05,         # 기본 최대 5%
+    "max_position_pct_high_conviction": 0.08,  # 고확신(>80%) 시 8%
+    "max_position_pct_very_high": 0.10,  # 초고확신(>90%) 시 10%
     "min_position_pct": 0.02,         # 최소 포지션 2%
 
     # 섹터 노출
     "max_sector_pct": 0.30,           # 단일 섹터 최대 30%
 
-    # 현금 비중
-    "min_cash_pct": 0.10,             # 최소 현금 10%
+    # 현금 비중 - 2026-03-19 개선: VIX 기반 동적 현금
+    "min_cash_pct": 0.10,             # 기본 최소 10%
+    "min_cash_pct_normal": 0.15,      # VIX < 20: 15%
+    "min_cash_pct_elevated": 0.20,    # VIX 20-30: 20%
+    "min_cash_pct_high": 0.30,        # VIX > 30: 30%
     "defensive_cash_pct": 0.50,       # 방어 모드 시 현금 50%
 
-    # 손절/익절
-    "stop_loss_pct": -0.07,           # 개별 종목 손절 -7%
-    "take_profit_pct": 0.20,          # 익절 +20%
-    "trailing_stop_pct": 0.05,        # 트레일링 스탑 5%
+    # 손절/익절 - 2026-03-19 개선: 시간 기반 익절
+    "stop_loss_pct": -0.05,           # 개별 종목 손절 -5% (기존 -7%)
+    "take_profit_pct": 0.15,          # 기본 익절 +15% (1개월 미만)
+    "take_profit_pct_3m": 0.25,       # 3개월 보유 시 +25%
+    "take_profit_pct_6m": 0.40,       # 6개월 보유 시 +40%
+    "take_profit_pct_1y": 0.60,       # 1년 보유 시 +60%
+    "trailing_stop_pct": 0.08,        # 트레일링 스탑 8% (기존 5%)
 
     # 드로다운 관리
     "daily_loss_limit": -0.02,        # 일일 손실 한도 -2%
@@ -134,18 +141,19 @@ LOGGING = {
 }
 
 # =============================================================================
-# 리스크 관리 기본값 (RiskLimits)
+# 리스크 관리 기본값 (RiskLimits) - 2026-03-19 개선
 # =============================================================================
 
 RISK_LIMITS = {
-    "max_position_pct": 0.05,         # 단일 종목 최대 5%
+    "max_position_pct": 0.05,         # 단일 종목 최대 5% (기본)
+    "max_position_pct_high": 0.08,    # 고확신 시 8%
     "max_sector_pct": 0.25,           # 단일 섹터 최대 25%
-    "max_daily_loss_pct": 0.03,       # 일일 최대 손실 3%
-    "max_weekly_loss_pct": 0.07,      # 주간 최대 손실 7%
-    "min_cash_ratio": 0.20,           # 최소 현금 비중 20%
+    "max_daily_loss_pct": 0.02,       # 일일 최대 손실 2% (기존 3%)
+    "max_weekly_loss_pct": 0.05,      # 주간 최대 손실 5% (기존 7%)
+    "min_cash_ratio": 0.15,           # 최소 현금 비중 15% (기존 20%)
     "max_positions": 20,              # 최대 보유 종목 수
-    "default_stop_loss_pct": 0.07,    # 기본 손절 7%
-    "trailing_stop_pct": 0.10,        # 트레일링 스탑 10%
+    "default_stop_loss_pct": 0.05,    # 기본 손절 5% (기존 7%)
+    "trailing_stop_pct": 0.08,        # 트레일링 스탑 8% (기존 10%)
 }
 
 # =============================================================================
@@ -163,10 +171,11 @@ SCORE_INTERPRETATION = {
 }
 
 # =============================================================================
-# 상수 (us_stock_trader.py 등에서 사용)
+# 상수 (us_stock_trader.py 등에서 사용) - 2026-03-19 개선
 # =============================================================================
 
-MAX_POSITION_RATIO = 0.05       # 최대 포지션 비율
-MAX_DAILY_LOSS = 0.03           # 최대 일일 손실
-MIN_CASH_RATIO = 0.20           # 최소 현금 비율
-MAX_ANALYSIS_SYMBOLS = 20       # 최대 분석 종목 수
+MAX_POSITION_RATIO = 0.05       # 기본 최대 포지션 비율
+MAX_POSITION_RATIO_HIGH = 0.08  # 고확신 시 최대 포지션
+MAX_DAILY_LOSS = 0.02           # 최대 일일 손실 (기존 3% → 2%)
+MIN_CASH_RATIO = 0.15           # 최소 현금 비율 (기존 20% → 15%)
+MAX_ANALYSIS_SYMBOLS = 25       # 최대 분석 종목 수 (기존 20 → 25)
