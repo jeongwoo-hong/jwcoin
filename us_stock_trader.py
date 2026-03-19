@@ -18,7 +18,7 @@ logger = setup_logger("us_stock", "INFO")
 
 # 모듈 임포트
 from us_stock.config import settings
-from us_stock.config.watchlist import WATCHLIST, get_sector
+from us_stock.config.watchlist import WATCHLIST, get_sector, get_all_symbols
 from us_stock.data.sources.kis_client import KISClient
 from us_stock.data.sources.market_data import MarketDataCollector
 
@@ -112,7 +112,7 @@ class USStockTrader:
         self.trading_halted = False
 
         logger.info(f"거래 모드: {'모의투자' if self.kis.is_paper else '실전투자'}")
-        logger.info(f"감시 종목: {len(WATCHLIST)}개")
+        logger.info(f"감시 종목: {len(get_all_symbols())}개")
         logger.info("초기화 완료")
 
     def check_market_status(self) -> bool:
@@ -320,20 +320,21 @@ class USStockTrader:
                 return
 
             # 3. 빠른 스크리닝 (Haiku)
+            all_symbols = get_all_symbols()
             candidates = []
             if self.quick_analyzer:
-                logger.info("빠른 스크리닝 시작...")
-                for symbol in WATCHLIST:
+                logger.info(f"빠른 스크리닝 시작... ({len(all_symbols)}개 종목)")
+                for symbol in all_symbols:
                     basic_data = self.market_data.get_quick_quote(symbol)
                     if basic_data:
                         screen_result = self.quick_analyzer.quick_screen(symbol, basic_data)
                         if screen_result.get("worth_analyzing"):
                             candidates.append(symbol)
 
-                logger.info(f"스크리닝 결과: {len(candidates)}/{len(WATCHLIST)} 종목 선정")
+                logger.info(f"스크리닝 결과: {len(candidates)}/{len(all_symbols)} 종목 선정")
             else:
                 # AI 없으면 전체 분석
-                candidates = list(WATCHLIST)
+                candidates = all_symbols
 
             # 4. 상세 분석
             analyses = []
