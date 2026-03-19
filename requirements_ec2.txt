@@ -1,5 +1,6 @@
 python-dotenv
-openai
+# openai  # OpenAI 사용 시 주석 해제
+anthropic
 pyupbit
 ta
 pandas
