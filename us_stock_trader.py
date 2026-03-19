@@ -478,10 +478,14 @@ class USStockTrader:
         schedule.every().day.at("23:35").do(self.market_open_check)
         logger.info("  - 장 시작 체크: 23:35")
 
-        # 장중 체크 (00:00, 01:00, 02:00, 03:00, 04:00, 05:00 KST)
-        for hour in ["00:00", "01:00", "02:00", "03:00", "04:00", "05:00"]:
-            schedule.every().day.at(hour).do(self.intraday_check)
-        logger.info("  - 장중 체크: 00:00~05:00 (매시간)")
+        # 장중 체크 (00:00~05:30 KST, 30분 간격)
+        intraday_times = [
+            "00:00", "00:30", "01:00", "01:30", "02:00", "02:30",
+            "03:00", "03:30", "04:00", "04:30", "05:00", "05:30"
+        ]
+        for t in intraday_times:
+            schedule.every().day.at(t).do(self.intraday_check)
+        logger.info("  - 장중 체크: 00:00~05:30 (30분 간격)")
 
         # 장 마감 전 (05:45 KST)
         schedule.every().day.at("05:45").do(self.intraday_check)

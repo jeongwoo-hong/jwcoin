@@ -87,6 +87,51 @@ WATCHLIST: Dict[str, List[str]] = {
         "XOM",    # ExxonMobil
         "CVX",    # Chevron
         "COP",    # ConocoPhillips
+        "SLB",    # Schlumberger
+        "EOG",    # EOG Resources
+    ],
+
+    # AI/로보틱스 (AI/Robotics)
+    "ai_robotics": [
+        "NVDA",   # NVIDIA (중복)
+        "GOOGL",  # Alphabet (중복)
+        "MSFT",   # Microsoft (중복)
+        "IBM",    # IBM
+        "ORCL",   # Oracle
+        "AI",     # C3.ai
+        "PATH",   # UiPath
+        "UPST",   # Upstart
+    ],
+
+    # 통신 (Communication)
+    "communication": [
+        "VZ",     # Verizon
+        "T",      # AT&T
+        "TMUS",   # T-Mobile
+        "NFLX",   # Netflix
+        "DIS",    # Disney
+        "CMCSA",  # Comcast
+    ],
+
+    # 산업재 (Industrials)
+    "industrials": [
+        "CAT",    # Caterpillar
+        "DE",     # Deere
+        "BA",     # Boeing
+        "HON",    # Honeywell
+        "UPS",    # UPS
+        "RTX",    # Raytheon
+        "LMT",    # Lockheed Martin
+        "GE",     # GE Aerospace
+    ],
+
+    # 리츠 (REITs)
+    "reits": [
+        "AMT",    # American Tower
+        "PLD",    # Prologis
+        "EQIX",   # Equinix
+        "O",      # Realty Income
+        "DLR",    # Digital Realty
     ],
 
     # ETF (벤치마크/모니터링용)
@@ -141,6 +186,25 @@ SECTOR_MAP: Dict[str, str] = {
 
     # Energy
     "XOM": "Energy", "CVX": "Energy", "COP": "Energy",
+    "SLB": "Energy", "EOG": "Energy",
+
+    # AI/Robotics
+    "IBM": "Technology", "ORCL": "Technology", "AI": "Technology",
+    "PATH": "Technology", "UPST": "Technology",
+
+    # Communication
+    "VZ": "Communication Services", "T": "Communication Services",
+    "TMUS": "Communication Services", "NFLX": "Communication Services",
+    "DIS": "Communication Services", "CMCSA": "Communication Services",
+
+    # Industrials
+    "CAT": "Industrials", "DE": "Industrials", "BA": "Industrials",
+    "HON": "Industrials", "UPS": "Industrials", "RTX": "Industrials",
+    "LMT": "Industrials", "GE": "Industrials",
+
+    # REITs
+    "AMT": "Real Estate", "PLD": "Real Estate", "EQIX": "Real Estate",
+    "O": "Real Estate", "DLR": "Real Estate",
 }
 
 # =============================================================================
