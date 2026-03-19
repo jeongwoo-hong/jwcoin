@@ -44,6 +44,7 @@ class TradingDecision(BaseModel):
     decision: str
     percentage: int
     reason: str
+    model: str = ""  # 사용된 AI 모델명
 
 class AIAnalyzer:
     def __init__(self):
@@ -187,7 +188,9 @@ class AIAnalyzer:
             # tool_use 결과에서 trading_decision 추출
             for block in response.content:
                 if block.type == "tool_use" and block.name == "trading_decision":
-                    return TradingDecision(**block.input)
+                    decision = TradingDecision(**block.input)
+                    decision.model = model  # 사용된 모델 정보 추가
+                    return decision
 
             logger.error("No trading_decision tool use found in response")
             return None

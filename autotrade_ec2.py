@@ -128,7 +128,8 @@ def scheduled_trade():
                 percentage=decision.percentage,
                 reason=decision.reason,
                 source="scheduled",
-                reflection=reflection
+                reflection=reflection,
+                model=decision.model
             )
 
             # 정기 매매 시간 기록 (긴급 트리거 보호용)
@@ -209,7 +210,8 @@ def handle_pnl_trigger(pnl_result: dict, indicators: dict, balance: dict):
                     reason=decision.reason,
                     source="stop_loss" if pnl_result["pnl_pct"] < 0 else "take_profit",
                     trigger_reason=pnl_result["message"],
-                    pnl_percentage=pnl_result["pnl_pct"]
+                    pnl_percentage=pnl_result["pnl_pct"],
+                    model=decision.model
                 )
 
 def handle_triggers(triggers: list, indicators: dict, balance: dict):
@@ -225,13 +227,14 @@ def handle_triggers(triggers: list, indicators: dict, balance: dict):
         
         if decision.decision != "hold":
             trigger_messages = ", ".join([t["message"] for t in triggers])
-            
+
             executor.execute(
                 decision=decision.decision,
                 percentage=decision.percentage,
                 reason=decision.reason,
                 source="triggered",
-                trigger_reason=trigger_messages
+                trigger_reason=trigger_messages,
+                model=decision.model
             )
 
 # =============================================================================

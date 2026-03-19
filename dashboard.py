@@ -684,6 +684,10 @@ def main():
             if 'source' in trades_df.columns:
                 cols.append('source')
 
+            # model 컬럼이 있으면 추가
+            if 'model' in trades_df.columns:
+                cols.append('model')
+
             # pnl_percentage 컬럼이 있으면 추가
             if 'pnl_percentage' in trades_df.columns:
                 cols.append('pnl_percentage')
@@ -767,6 +771,22 @@ def main():
                     'take_profit': '💰익절'
                 }).fillna('🕐정기')
 
+            # model 포맷팅 (짧게 표시)
+            if 'model' in display.columns:
+                def format_model(m):
+                    if pd.isna(m) or not m:
+                        return "-"
+                    if 'sonnet' in str(m).lower():
+                        return '🟣Sonnet'
+                    if 'haiku' in str(m).lower():
+                        return '🟢Haiku'
+                    if 'opus' in str(m).lower():
+                        return '🔴Opus'
+                    if 'gpt-4' in str(m).lower():
+                        return '🔵GPT-4'
+                    return str(m)[:10]
+                display['model'] = display['model'].apply(format_model)
+
             # pnl_percentage 포맷팅
             if 'pnl_percentage' in display.columns:
                 display['pnl_percentage'] = display['pnl_percentage'].apply(
@@ -787,8 +807,8 @@ def main():
             # 컬럼명 변경
             col_names = {
                 'timestamp': '시간', 'decision': '결정', 'percentage': '%',
-                'trade_amount': '거래금액', 'source': '출처', 'pnl_percentage': '손익',
-                'btc_balance': 'BTC', 'btc_krw_price': '가격',
+                'trade_amount': '거래금액', 'source': '출처', 'model': '모델',
+                'pnl_percentage': '손익', 'btc_balance': 'BTC', 'btc_krw_price': '가격',
                 'reason': '이유', 'trigger_reason': '트리거'
             }
             display.columns = [col_names.get(c, c) for c in display.columns]

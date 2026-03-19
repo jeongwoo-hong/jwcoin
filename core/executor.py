@@ -89,7 +89,8 @@ class TradeExecutor:
     
     def execute(self, decision: str, percentage: int, reason: str,
                 source: str = "scheduled", trigger_reason: str = "",
-                pnl_percentage: float = None, reflection: str = "") -> bool:
+                pnl_percentage: float = None, reflection: str = "",
+                model: str = "") -> bool:
         """매매 실행"""
         with self.lock:
             is_emergency = source in ["triggered", "stop_loss", "take_profit"]
@@ -139,7 +140,7 @@ class TradeExecutor:
 
                     # 로깅
                     self._log_trade(decision, percentage, reason, source,
-                                   trigger_reason, pnl_percentage, balance, reflection)
+                                   trigger_reason, pnl_percentage, balance, reflection, model)
                     return True
                 
                 return False
@@ -185,7 +186,7 @@ class TradeExecutor:
     
     def _log_trade(self, decision: str, percentage: int, reason: str,
                    source: str, trigger_reason: str, pnl_percentage: float,
-                   balance: Dict, reflection: str = ""):
+                   balance: Dict, reflection: str = "", model: str = ""):
         """거래 로깅"""
         try:
             # 최신 잔고 조회
@@ -203,11 +204,12 @@ class TradeExecutor:
                 "source": source,
                 "trigger_reason": trigger_reason,
                 "pnl_percentage": pnl_percentage,
-                "reflection": reflection
+                "reflection": reflection,
+                "model": model
             }
 
             self.supabase.table("trades").insert(data).execute()
-            logger.info(f"Trade logged: {decision} ({source})")
+            logger.info(f"Trade logged: {decision} ({source}) - {model}")
             
         except Exception as e:
             logger.error(f"Trade logging error: {e}")
