@@ -12,7 +12,6 @@ plotly
 schedule
 googletrans==4.0.0-rc1
 supabase
-
 # US Stock Trader 추가 패키지
 yfinance
 pandas
