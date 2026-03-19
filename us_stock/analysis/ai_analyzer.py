@@ -19,6 +19,37 @@ class AIAnalyzer:
         self.client = Anthropic(api_key=api_key)
         self.model = model
 
+    def generate_reflection(self, recent_trades: str, market_condition: Dict) -> str:
+        """과거 거래 반성 및 개선점 생성 (Haiku)"""
+        try:
+            prompt = f"""당신은 미국 주식 투자 코치입니다. 아래 최근 거래 기록과 현재 시장 상황을 분석하여
+다음에 대해 간단히 반성해주세요:
+
+1. 잘한 점 (1-2개)
+2. 개선할 점 (1-2개)
+3. 다음 거래에 반영할 교훈 (1개)
+
+최근 거래 기록:
+{recent_trades}
+
+현재 시장 상황:
+- VIX: {market_condition.get('vix', 'N/A')}
+- S&P 500 변화: {market_condition.get('sp500_change', 'N/A')}%
+- 리스크 레벨: {market_condition.get('risk_level', 'N/A')}
+
+간결하게 3-5문장으로 답변해주세요."""
+
+            response = self.client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=300,
+                messages=[{"role": "user", "content": prompt}],
+            )
+
+            return response.content[0].text
+        except Exception as e:
+            logger.error(f"Reflection generation error: {e}")
+            return ""
+
     def analyze(
         self,
         symbol: str,
@@ -241,12 +272,28 @@ class AIAnalyzer:
 """
 
         # 포트폴리오 상태
+        recent_trades = portfolio.get('recent_trades', '')
+        reflection = portfolio.get('reflection', '')
+
         portfolio_summary = f"""
 포트폴리오 상태:
 - 총 자산: ${portfolio.get('total_value', 0):,.0f}
 - 현금 비중: {portfolio.get('cash_ratio', 0):.0%}
 - 현재 {symbol} 보유: {portfolio.get('positions', {}).get(symbol, {}).get('quantity', 0)}주
 - 전체 종목 수: {len(portfolio.get('positions', {}))}
+"""
+
+        # 과거 거래 히스토리 (있는 경우만)
+        history_section = ""
+        if recent_trades:
+            history_section += f"""
+### 최근 거래 내역 (참고용) ###
+{recent_trades}
+"""
+        if reflection:
+            history_section += f"""
+### 이전 거래 반성 ###
+{reflection}
 """
 
         # 최종 프롬프트
@@ -258,6 +305,7 @@ class AIAnalyzer:
 3. 거시경제 리스크가 높으면 보수적으로 판단하세요.
 4. 기술적, 기본적, 센티멘트가 모두 일치할 때만 적극적인 결정을 내리세요.
 5. 확신도가 60% 미만이면 거래하지 마세요.
+6. 과거 거래 내역을 참고하여 같은 실수를 반복하지 마세요.
 
 ### 분석 데이터 ###
 
@@ -272,13 +320,14 @@ class AIAnalyzer:
 {score_summary}
 
 {portfolio_summary}
-
+{history_section}
 ### 시장 상황 ###
 - 현재 시간: {datetime.now().strftime('%Y-%m-%d %H:%M')} (한국 시간)
 - 미국 시장 상태: {market.get('is_open', False) and '개장중' or '폐장'}
 
 위 데이터를 종합적으로 분석하여 투자 결정을 내려주세요.
 결정을 내릴 때는 반드시 근거를 명확히 하고, 리스크를 식별하세요.
+과거 거래 내역이 있다면 참고하여 더 나은 결정을 내리세요.
 """
         return prompt
 
@@ -306,6 +355,8 @@ class AIAnalyzer:
         portfolio: Dict,
         market_condition: Dict,
         max_recommendations: int = 5,
+        recent_trades: str = "",
+        reflection: str = "",
     ) -> Dict:
         """
         여러 종목 분석 후 최적 포트폴리오 추천
@@ -315,18 +366,27 @@ class AIAnalyzer:
             portfolio: 현재 포트폴리오
             market_condition: 시장 상황
             max_recommendations: 최대 추천 종목 수
+            recent_trades: 최근 거래 내역 (AI 학습용)
+            reflection: 과거 거래 반성 (AI 학습용)
 
         Returns:
             포트폴리오 추천 딕셔너리
         """
         try:
+            # 포트폴리오에 거래 히스토리 추가
+            portfolio_with_history = {
+                **portfolio,
+                "recent_trades": recent_trades,
+                "reflection": reflection,
+            }
+
             # 각 종목별 AI 분석
             decisions = []
             for analysis in analyses:
                 symbol = analysis.get("symbol")
                 if symbol:
                     decision = self.analyze(
-                        symbol, analysis, portfolio, market_condition
+                        symbol, analysis, portfolio_with_history, market_condition
                     )
                     decisions.append(decision)
 

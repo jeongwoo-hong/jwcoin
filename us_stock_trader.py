@@ -6,7 +6,7 @@ import os
 import sys
 import time
 import schedule
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 # 환경변수 로드
@@ -22,6 +22,9 @@ from us_stock.config.watchlist import WATCHLIST, get_sector
 from us_stock.data.sources.kis_client import KISClient
 from us_stock.data.sources.market_data import MarketDataCollector
 
+# Supabase
+from config.database import get_supabase
+
 # 분석 엔진
 from us_stock.analysis.scoring import ComprehensiveScorer
 from us_stock.analysis.ai_analyzer import AIAnalyzer, QuickAnalyzer
@@ -31,6 +34,39 @@ from us_stock.risk.manager import RiskManager, RiskLimits
 
 # 실행
 from us_stock.execution.executor import OrderExecutor, PositionMonitor
+
+# Supabase 클라이언트 (싱글톤)
+supabase = get_supabase()
+
+
+def get_recent_us_stock_trades(days: int = 7, limit: int = 30) -> str:
+    """최근 미국 주식 거래 기록 조회 (AI 분석용)"""
+    try:
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        response = supabase.table("us_stock_trades") \
+            .select("timestamp, symbol, action, quantity, price, pnl_pct, key_reasons") \
+            .gte("timestamp", cutoff) \
+            .order("timestamp", desc=True) \
+            .limit(limit) \
+            .execute()
+
+        if response.data:
+            trades_text = []
+            for t in response.data:
+                reasons = t.get('key_reasons', []) or []
+                reason_short = reasons[0][:60] + '...' if reasons and len(reasons[0]) > 60 else (reasons[0] if reasons else '')
+                pnl = t.get('pnl_pct')
+                pnl_str = f" ({pnl:+.1f}%)" if pnl is not None else ""
+
+                trades_text.append(
+                    f"[{t['timestamp'][5:16]}] {t['action'].upper()} {t['symbol']} "
+                    f"x{t['quantity']} @${t['price']:.2f}{pnl_str} | {reason_short}"
+                )
+            return "\n".join(trades_text)
+        return "최근 거래 없음"
+    except Exception as e:
+        logger.error(f"Recent US stock trades fetch error: {e}")
+        return "조회 실패"
 
 
 class USStockTrader:
@@ -66,8 +102,8 @@ class USStockTrader:
             min_cash_ratio=settings.MIN_CASH_RATIO,
         ))
 
-        # 실행기
-        self.executor = OrderExecutor(self.kis, self.risk_manager)
+        # 실행기 (Supabase 연결)
+        self.executor = OrderExecutor(self.kis, self.risk_manager, db_client=supabase)
         self.monitor = PositionMonitor(self.kis, self.executor)
 
         # 상태
@@ -306,14 +342,29 @@ class USStockTrader:
                 if result:
                     analyses.append(result)
 
-            # 5. AI 최종 분석 (Sonnet)
+            # 5. AI 최종 분석 (Sonnet) - 과거 거래내역 반영
             if self.ai_analyzer and analyses:
                 logger.info("AI 최종 분석 시작...")
+
+                # 과거 거래 내역 조회
+                recent_trades = get_recent_us_stock_trades(days=7, limit=30)
+                logger.info(f"최근 거래 기록: {len(recent_trades.split(chr(10)))}건")
+
+                # AI 반성 생성 (Haiku - 저비용)
+                reflection = ""
+                if recent_trades and recent_trades != "최근 거래 없음":
+                    reflection = self.ai_analyzer.generate_reflection(
+                        recent_trades, market_condition
+                    )
+                    logger.info("과거 거래 반성 완료")
+
                 recommendations = self.ai_analyzer.batch_analyze(
                     analyses=analyses,
                     portfolio=portfolio,
                     market_condition=market_condition,
                     max_recommendations=5,
+                    recent_trades=recent_trades,
+                    reflection=reflection,
                 )
 
                 buy_recs = recommendations.get("buy_recommendations", [])
@@ -478,18 +529,22 @@ class USStockTrader:
         schedule.every().day.at("23:35").do(self.market_open_check)
         logger.info("  - 장 시작 체크: 23:35")
 
-        # 장중 체크 (00:00~05:30 KST, 30분 간격)
+        # 장중 체크 (00:00~05:45 KST, 15분 간격) - 비용 추가 없음
         intraday_times = [
-            "00:00", "00:30", "01:00", "01:30", "02:00", "02:30",
-            "03:00", "03:30", "04:00", "04:30", "05:00", "05:30"
+            "00:00", "00:15", "00:30", "00:45",
+            "01:00", "01:15", "01:30", "01:45",
+            "02:00", "02:15", "02:30", "02:45",
+            "03:00", "03:15", "03:30", "03:45",
+            "04:00", "04:15", "04:30", "04:45",
+            "05:00", "05:15", "05:30",
         ]
         for t in intraday_times:
             schedule.every().day.at(t).do(self.intraday_check)
-        logger.info("  - 장중 체크: 00:00~05:30 (30분 간격)")
+        logger.info("  - 장중 체크: 00:00~05:30 (15분 간격)")
 
-        # 장 마감 전 (05:45 KST)
+        # 장 마감 전 (05:45 KST) - 별도 체크
         schedule.every().day.at("05:45").do(self.intraday_check)
-        logger.info("  - 장 마감 전: 05:45")
+        logger.info("  - 장 마감 전 체크: 05:45")
 
         # 일일 리뷰 (07:00 KST)
         schedule.every().day.at("07:00").do(self.daily_review)
