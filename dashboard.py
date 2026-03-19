@@ -797,7 +797,14 @@ def render_coin_dashboard(days, chart_start_date):
 
             display['btc_balance'] = display['btc_balance'].apply(lambda x: f"{x:.4f}")
             display['btc_krw_price'] = display['btc_krw_price'].apply(lambda x: f"{x:,.0f}")
-            display['reason'] = display['reason'].apply(lambda x: str(x)[:50] + '...' if pd.notna(x) and len(str(x)) > 50 else str(x) if pd.notna(x) else "-")
+            # reason 번역 적용
+            def format_reason(x):
+                if pd.isna(x) or not x:
+                    return "-"
+                text = str(x)
+                translated = translate_to_korean(text[:200])  # 번역 API 호출 최적화
+                return translated[:50] + '...' if len(translated) > 50 else translated
+            display['reason'] = display['reason'].apply(format_reason)
 
             col_names = {'timestamp': '시간', 'decision': '결정', 'percentage': '%', 'source': '출처', 'model': '모델', 'pnl_percentage': '손익', 'btc_balance': 'BTC', 'btc_krw_price': '가격', 'reason': '이유'}
             display.columns = [col_names.get(c, c) for c in display.columns]
