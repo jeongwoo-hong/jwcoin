@@ -8,7 +8,7 @@ from datetime import datetime
 # from openai import OpenAI  # OpenAI 사용 시 주석 해제
 import anthropic
 from pydantic import BaseModel
-from supabase import create_client, Client
+from config.database import get_supabase
 import logging
 
 logger = logging.getLogger(__name__)
@@ -50,10 +50,7 @@ class AIAnalyzer:
     def __init__(self):
         # self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))  # OpenAI 사용 시 주석 해제
         self.client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-        self.supabase: Client = create_client(
-            os.getenv("SUPABASE_URL"),
-            os.getenv("SUPABASE_KEY")
-        )
+        self.supabase = get_supabase()
 
     def _calculate_cost(self, model: str, input_tokens: int, output_tokens: int) -> Dict:
         """토큰 사용량 기반 비용 계산"""

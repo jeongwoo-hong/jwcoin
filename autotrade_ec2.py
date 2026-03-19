@@ -11,7 +11,6 @@ import logging
 import schedule
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from supabase import create_client, Client
 
 # 환경변수 로드
 load_dotenv()
@@ -25,17 +24,15 @@ logger = logging.getLogger(__name__)
 
 # 모듈 임포트
 from config import settings
+from config.database import get_supabase
 from core.indicators import calculate_indicators
 from core.triggers import TriggerManager
 from core.pnl_manager import PnLManager
 from core.ai_analyzer import AIAnalyzer
 from core.executor import TradeExecutor
 
-# Supabase 클라이언트
-supabase: Client = create_client(
-    os.getenv("SUPABASE_URL"),
-    os.getenv("SUPABASE_KEY")
-)
+# Supabase 클라이언트 (싱글톤)
+supabase = get_supabase()
 
 def get_recent_trades_with_reasons(days=7, limit=50):
     """최근 거래 기록 및 판단 이유 조회 (토큰 최적화)"""

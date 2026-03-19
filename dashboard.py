@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import pyupbit
+import yfinance as yf
 import os
 from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
@@ -15,7 +16,7 @@ KST = timezone(timedelta(hours=9))
 load_dotenv()
 
 # ============================================================================
-# 데이터 조회 함수들
+# 공통 함수
 # ============================================================================
 
 @st.cache_resource
@@ -25,6 +26,36 @@ def get_supabase_client():
     if not url or not key:
         return None
     return create_client(url, key)
+
+def format_krw(value):
+    if pd.isna(value) or value is None:
+        return "0"
+    try:
+        return f"{float(value):,.0f}"
+    except:
+        return str(value)
+
+def format_usd(value):
+    if pd.isna(value) or value is None:
+        return "$0"
+    try:
+        return f"${float(value):,.2f}"
+    except:
+        return str(value)
+
+@st.cache_data(ttl=3600)
+def translate_to_korean(text):
+    if not text or pd.isna(text):
+        return ""
+    try:
+        translator = GoogleTranslator(source='en', target='ko')
+        return translator.translate(text[:4500] if len(text) > 4500 else text)
+    except Exception as e:
+        return f"번역 실패: {e}"
+
+# ============================================================================
+# 코인 관련 함수들
+# ============================================================================
 
 @st.cache_resource
 def get_upbit_client():
@@ -56,7 +87,6 @@ def get_trades_from_supabase(days=30):
 
 @st.cache_data(ttl=300)
 def get_upbit_orders(market="KRW-BTC"):
-    """업비트 체결 내역 조회"""
     upbit = get_upbit_client()
     if not upbit:
         return pd.DataFrame()
@@ -77,7 +107,6 @@ def get_upbit_orders(market="KRW-BTC"):
         return pd.DataFrame()
 
 def get_trading_fees(orders_df, days=30):
-    """조회 기간 내 거래 수수료 합계"""
     if orders_df.empty:
         return 0
     try:
@@ -177,10 +206,6 @@ def get_current_btc_price():
     except:
         return None
 
-# ============================================================================
-# 데이터 조작 함수들
-# ============================================================================
-
 def add_deposit(amount, deposit_type, memo):
     supabase = get_supabase_client()
     if not supabase:
@@ -221,37 +246,12 @@ def delete_expense(expense_id):
     except:
         return False
 
-@st.cache_data(ttl=3600)
-def translate_to_korean(text):
-    if not text or pd.isna(text):
-        return ""
-    try:
-        translator = GoogleTranslator(source='en', target='ko')
-        return translator.translate(text[:4500] if len(text) > 4500 else text)
-    except Exception as e:
-        return f"번역 실패: {e}"
-
-# ============================================================================
-# 계산 함수들
-# ============================================================================
-
-def format_krw(value):
-    if pd.isna(value) or value is None:
-        return "0"
-    try:
-        return f"{float(value):,.0f}"
-    except:
-        return str(value)
-
 def calculate_monthly_expenses(expenses_df, trading_fees=0, days=30):
     total = 0
     by_cat = {'api': 0, 'server': 0, 'trading_fee': 0, 'other': 0}
-
-    # 거래 수수료 추가 (조회 기간 기준 월간 환산)
     monthly_trading_fee = trading_fees * (30 / days) if days > 0 else trading_fees
     by_cat['trading_fee'] = monthly_trading_fee
     total += monthly_trading_fee
-
     if not expenses_df.empty:
         for _, row in expenses_df.iterrows():
             amount = float(row['amount'])
@@ -272,30 +272,18 @@ def calculate_monthly_expenses(expenses_df, trading_fees=0, days=30):
 def calculate_performance(trades_df, deposits_df, expenses_df, current_btc_price, days=30, trading_fees=0):
     if trades_df.empty:
         return {}
-
     df_sorted = trades_df.sort_values('timestamp')
     last = df_sorted.iloc[-1]
-
-    # 현재 BTC 가격으로 총자산 계산
     price = current_btc_price or last['btc_krw_price']
     current_total = last['krw_balance'] + last['btc_balance'] * price
-
-    # 총 입금 / 출금
     total_dep = deposits_df[deposits_df['type'] == 'deposit']['amount'].sum() if not deposits_df.empty else 0
     total_wd = deposits_df[deposits_df['type'] == 'withdraw']['amount'].sum() if not deposits_df.empty else 0
     net_dep = total_dep - total_wd
-
-    # 월간 비용 (거래 수수료 포함)
     monthly_exp, exp_by_cat = calculate_monthly_expenses(expenses_df, trading_fees, days)
-
-    # 실질 수익 = 현재 총자산 - 순입금액
     real_profit = current_total - net_dep
     real_rate = (real_profit / net_dep * 100) if net_dep > 0 else 0
-
-    # 비용 제외 순수익
     net_profit = real_profit - monthly_exp
     net_rate = (net_profit / net_dep * 100) if net_dep > 0 else 0
-
     return {
         'current_total': current_total,
         'total_deposits': total_dep,
@@ -318,35 +306,134 @@ def calculate_performance(trades_df, deposits_df, expenses_df, current_btc_price
     }
 
 # ============================================================================
-# 차트 함수들
+# 미국 주식 관련 함수들
+# ============================================================================
+
+@st.cache_data(ttl=60)
+def get_us_stock_trades(days=30):
+    """미국 주식 거래 기록 조회"""
+    supabase = get_supabase_client()
+    if not supabase:
+        return pd.DataFrame()
+    try:
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        response = supabase.table("us_stock_trades").select("*").gte("created_at", cutoff).order("created_at", desc=True).execute()
+        if response.data:
+            df = pd.DataFrame(response.data)
+            ts = pd.to_datetime(df['created_at'])
+            df['created_at'] = ts.dt.tz_convert('Asia/Seoul') if ts.dt.tz else ts.dt.tz_localize('UTC').dt.tz_convert('Asia/Seoul')
+            return df
+        return pd.DataFrame()
+    except:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=60)
+def get_us_portfolio_snapshots(days=30):
+    """포트폴리오 스냅샷 조회"""
+    supabase = get_supabase_client()
+    if not supabase:
+        return pd.DataFrame()
+    try:
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        response = supabase.table("us_stock_portfolio_snapshots").select("*").gte("created_at", cutoff).order("created_at", desc=True).execute()
+        if response.data:
+            df = pd.DataFrame(response.data)
+            ts = pd.to_datetime(df['created_at'])
+            df['created_at'] = ts.dt.tz_convert('Asia/Seoul') if ts.dt.tz else ts.dt.tz_localize('UTC').dt.tz_convert('Asia/Seoul')
+            return df
+        return pd.DataFrame()
+    except:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=300)
+def get_market_indices():
+    """주요 시장 지수 조회"""
+    indices = {
+        "^GSPC": "S&P 500",
+        "^IXIC": "NASDAQ",
+        "^DJI": "Dow Jones",
+        "^VIX": "VIX",
+    }
+    result = {}
+    for symbol, name in indices.items():
+        try:
+            ticker = yf.Ticker(symbol)
+            hist = ticker.history(period="5d")
+            if not hist.empty:
+                current = hist['Close'].iloc[-1]
+                prev = hist['Close'].iloc[-2] if len(hist) > 1 else current
+                result[name] = {
+                    "price": current,
+                    "change": current - prev,
+                    "change_pct": (current - prev) / prev * 100,
+                }
+        except:
+            pass
+    return result
+
+@st.cache_data(ttl=300)
+def get_stock_price(symbol: str):
+    """개별 종목 가격 조회"""
+    try:
+        ticker = yf.Ticker(symbol)
+        hist = ticker.history(period="5d")
+        if not hist.empty:
+            return {
+                "price": hist['Close'].iloc[-1],
+                "change_pct": (hist['Close'].iloc[-1] / hist['Close'].iloc[-2] - 1) * 100 if len(hist) > 1 else 0
+            }
+    except:
+        pass
+    return None
+
+@st.cache_data(ttl=300)
+def get_sector_performance():
+    """섹터 성과 조회"""
+    sector_etfs = {
+        "XLK": "Technology",
+        "XLF": "Financials",
+        "XLV": "Healthcare",
+        "XLE": "Energy",
+        "XLY": "Consumer Disc.",
+        "XLP": "Consumer Staples",
+        "XLI": "Industrials",
+    }
+    result = {}
+    for symbol, sector in sector_etfs.items():
+        try:
+            ticker = yf.Ticker(symbol)
+            hist = ticker.history(period="5d")
+            if not hist.empty:
+                current = hist['Close'].iloc[-1]
+                prev = hist['Close'].iloc[-2] if len(hist) > 1 else current
+                result[sector] = {
+                    "change_pct": (current - prev) / prev * 100,
+                }
+        except:
+            pass
+    return result
+
+# ============================================================================
+# 코인 차트 함수들
 # ============================================================================
 
 def create_asset_chart(df, deposits_df, current_price, start_date=None):
-    """자산 증감 차트 (시작일 기준)"""
     if df.empty:
         return go.Figure()
     df_sorted = df.sort_values('timestamp').copy()
-
-    # 시작일 필터링
     if start_date is not None:
         start_datetime = datetime.combine(start_date, datetime.min.time())
         start_datetime = start_datetime.replace(tzinfo=KST)
         df_sorted = df_sorted[df_sorted['timestamp'] >= start_datetime]
-
     if df_sorted.empty:
         fig = go.Figure()
         fig.add_annotation(text="데이터 없음", xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
         fig.update_layout(margin=dict(l=0, r=0, t=30, b=0), height=280, template='plotly_dark')
         return fig
-
-    # 현재 가격으로 통일
     price = current_price or df_sorted['btc_krw_price'].iloc[-1]
     df_sorted['total'] = df_sorted['krw_balance'] + df_sorted['btc_balance'] * price
-
-    # 시작점 대비 변화량
     initial = df_sorted['total'].iloc[0]
     df_sorted['change'] = df_sorted['total'] - initial
-
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=df_sorted['timestamp'], y=df_sorted['change'],
@@ -354,10 +441,7 @@ def create_asset_chart(df, deposits_df, current_price, start_date=None):
         line=dict(color='#00D4AA', width=2),
         fill='tozeroy', fillcolor='rgba(0, 212, 170, 0.1)'
     ))
-
-    # 0선
     fig.add_hline(y=0, line_dash="dash", line_color="rgba(255,255,255,0.3)")
-
     fig.update_layout(
         margin=dict(l=0, r=0, t=30, b=0),
         height=280, template='plotly_dark',
@@ -368,64 +452,41 @@ def create_asset_chart(df, deposits_df, current_price, start_date=None):
     return fig
 
 def create_profit_chart(df, deposits_df, current_price, start_date=None):
-    """실질 수익 추이 차트 (총자산 - 순입금)"""
     if df.empty:
         return go.Figure()
-
     df_sorted = df.sort_values('timestamp').copy()
-
-    # 시작일 필터링
     if start_date is not None:
         start_datetime = datetime.combine(start_date, datetime.min.time())
         start_datetime = start_datetime.replace(tzinfo=KST)
         df_sorted = df_sorted[df_sorted['timestamp'] >= start_datetime]
-
     if df_sorted.empty:
         fig = go.Figure()
         fig.add_annotation(text="데이터 없음", xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
         fig.update_layout(margin=dict(l=0, r=0, t=30, b=0), height=280, template='plotly_dark')
         return fig
-
-    # 총 순입금 계산 (전체 기간)
     net_deposits = 0
     if not deposits_df.empty:
         total_dep = deposits_df[deposits_df['type'] == 'deposit']['amount'].sum()
         total_wd = deposits_df[deposits_df['type'] == 'withdraw']['amount'].sum()
         net_deposits = total_dep - total_wd
-
-    # 각 시점의 총 자산 및 실질 수익 계산
     df_sorted['total'] = df_sorted['krw_balance'] + df_sorted['btc_balance'] * current_price
     df_sorted['profit'] = df_sorted['total'] - net_deposits
-    df_sorted['profit_rate'] = (df_sorted['profit'] / net_deposits * 100) if net_deposits > 0 else 0
-
     fig = go.Figure()
-
-    # 수익/손실 색상 구분
-    colors = ['#00D4AA' if p >= 0 else '#FF6B6B' for p in df_sorted['profit']]
-
     fig.add_trace(go.Scatter(
-        x=df_sorted['timestamp'],
-        y=df_sorted['profit'],
-        mode='lines+markers',
-        name='실질 수익',
+        x=df_sorted['timestamp'], y=df_sorted['profit'],
+        mode='lines+markers', name='실질 수익',
         line=dict(color='#00D4AA', width=2),
-        marker=dict(size=4, color=colors),
-        fill='tozeroy',
-        fillcolor='rgba(0, 212, 170, 0.1)'
+        marker=dict(size=4),
+        fill='tozeroy', fillcolor='rgba(0, 212, 170, 0.1)'
     ))
-
-    # 0선 추가
     fig.add_hline(y=0, line_dash="dash", line_color="rgba(255,255,255,0.3)")
-
     fig.update_layout(
         margin=dict(l=0, r=0, t=30, b=0),
-        height=280,
-        template='plotly_dark',
+        height=280, template='plotly_dark',
         xaxis=dict(showgrid=False),
         yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.1)'),
         showlegend=False
     )
-
     return fig
 
 def create_btc_chart(df):
@@ -494,117 +555,120 @@ def create_expense_chart(by_cat):
     return fig
 
 # ============================================================================
-# 메인 앱
+# 미국 주식 차트 함수들
 # ============================================================================
 
-def main():
-    st.set_page_config(page_title="JWCoin Dashboard", page_icon="📈", layout="wide")
+def create_us_portfolio_chart(df):
+    """미국 주식 포트폴리오 추이"""
+    if df.empty:
+        fig = go.Figure()
+        fig.add_annotation(text="데이터 없음", xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
+        fig.update_layout(margin=dict(l=0, r=0, t=30, b=0), height=280, template='plotly_dark')
+        return fig
 
-    # CSS (테마는 .streamlit/config.toml에서 설정)
-    st.markdown("""
-    <style>
-    /* 헤더 & 사이드바 숨김 */
-    header[data-testid="stHeader"] { display: none !important; }
-    #MainMenu { visibility: hidden; }
-    footer { visibility: hidden; }
-    [data-testid="stSidebar"] { display: none !important; }
-    [data-testid="collapsedControl"] { display: none !important; }
+    df_sorted = df.sort_values('created_at').copy()
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=df_sorted['created_at'], y=df_sorted['total_value'],
+        mode='lines', name='총 자산',
+        line=dict(color='#00D4AA', width=2),
+        fill='tozeroy', fillcolor='rgba(0, 212, 170, 0.1)'
+    ))
+    fig.update_layout(
+        margin=dict(l=0, r=0, t=30, b=0),
+        height=280, template='plotly_dark',
+        xaxis=dict(showgrid=False),
+        yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.1)'),
+        showlegend=False
+    )
+    return fig
 
-    /* 레이아웃 */
-    .block-container { padding: 1rem 2rem; max-width: 100%; }
+def create_us_pnl_chart(df):
+    """미국 주식 손익 추이"""
+    if df.empty:
+        fig = go.Figure()
+        fig.add_annotation(text="데이터 없음", xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
+        fig.update_layout(margin=dict(l=0, r=0, t=30, b=0), height=280, template='plotly_dark')
+        return fig
 
-    /* 제목 크기 */
-    h1 { font-size: 1.5rem !important; font-weight: 600 !important; margin-bottom: 0.5rem !important; }
-    h2 { font-size: 1.1rem !important; font-weight: 500 !important; margin: 1rem 0 0.5rem 0 !important; }
-    h3 { font-size: 1rem !important; font-weight: 500 !important; }
+    df_sorted = df.sort_values('created_at').copy()
+    if 'unrealized_pnl' not in df_sorted.columns:
+        df_sorted['unrealized_pnl'] = 0
 
-    /* 메트릭 카드 */
-    [data-testid="stMetric"] {
-        border: 1px solid rgba(255,255,255,0.1);
-        border-radius: 12px;
-        padding: 1rem;
-    }
-    [data-testid="stMetricLabel"] { font-size: 0.75rem; }
-    [data-testid="stMetricValue"] { font-size: 1.2rem; font-weight: 600; }
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=df_sorted['created_at'], y=df_sorted['unrealized_pnl'],
+        mode='lines+markers', name='미실현 손익',
+        line=dict(color='#4ECDC4', width=2),
+        marker=dict(size=4)
+    ))
+    fig.add_hline(y=0, line_dash="dash", line_color="rgba(255,255,255,0.3)")
+    fig.update_layout(
+        margin=dict(l=0, r=0, t=30, b=0),
+        height=280, template='plotly_dark',
+        xaxis=dict(showgrid=False),
+        yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.1)'),
+        showlegend=False
+    )
+    return fig
 
-    /* 탭 스타일 */
-    .stTabs [data-baseweb="tab-list"] { gap: 8px; }
-    .stTabs [data-baseweb="tab"] { border-radius: 8px; padding: 8px 16px; font-size: 0.85rem; }
+def create_sector_chart(sectors):
+    """섹터 성과 차트"""
+    if not sectors:
+        fig = go.Figure()
+        fig.add_annotation(text="데이터 없음", xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
+        fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=200, template='plotly_dark')
+        return fig
 
-    /* 데이터프레임 */
-    .stDataFrame { border-radius: 8px; overflow: hidden; }
+    sorted_sectors = sorted(sectors.items(), key=lambda x: x[1]['change_pct'], reverse=True)
+    names = [s[0] for s in sorted_sectors]
+    changes = [s[1]['change_pct'] for s in sorted_sectors]
+    colors = ['#00D4AA' if c >= 0 else '#FF6B6B' for c in changes]
 
-    /* 버튼 */
-    .stButton > button { border-radius: 8px; font-size: 0.85rem; padding: 0.4rem 1rem; }
+    fig = go.Figure(data=[go.Bar(
+        x=changes, y=names,
+        orientation='h',
+        marker_color=colors
+    )])
+    fig.update_layout(
+        margin=dict(l=0, r=0, t=0, b=0),
+        height=200, template='plotly_dark',
+        xaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.1)'),
+        yaxis=dict(showgrid=False),
+    )
+    return fig
 
-    /* 구분선 */
-    hr { margin: 1rem 0; }
+def create_us_trade_decision_chart(df):
+    """미국 주식 거래 결정 파이 차트"""
+    if df.empty or 'action' not in df.columns:
+        fig = go.Figure()
+        fig.add_annotation(text="거래 없음", xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
+        fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=180, template='plotly_dark')
+        return fig
 
-    /* Expander */
-    .streamlit-expanderHeader { font-size: 0.85rem; }
-    </style>
-    """, unsafe_allow_html=True)
+    counts = df['action'].value_counts()
+    colors = {'buy': '#00D4AA', 'sell': '#FF6B6B', 'stop_loss': '#F7931A', 'take_profit': '#4ECDC4'}
+    labels = {'buy': '매수', 'sell': '매도', 'stop_loss': '손절', 'take_profit': '익절'}
 
-    # ===== 설정 패널 (메인 화면 상단) =====
-    with st.expander("⚙️ 설정", expanded=False):
-        col1, col2, col3, col4 = st.columns(4)
+    fig = go.Figure(data=[go.Pie(
+        labels=[labels.get(d, d) for d in counts.index],
+        values=counts.values,
+        marker_colors=[colors.get(d, '#888') for d in counts.index],
+        hole=0.6, textinfo='percent', textfont_size=12
+    )])
+    fig.update_layout(
+        margin=dict(l=0, r=0, t=0, b=0),
+        height=180, template='plotly_dark',
+        showlegend=True, legend=dict(orientation='h', y=-0.1)
+    )
+    return fig
 
-        with col1:
-            days = st.slider("조회 기간", 1, 90, 30, format="%d일")
+# ============================================================================
+# 코인 대시보드
+# ============================================================================
 
-        with col2:
-            chart_start_date = st.date_input(
-                "차트 시작일",
-                value=datetime.now(KST) - timedelta(days=7),
-                max_value=datetime.now(KST).date()
-            )
-
-        with col3:
-            if st.button("🔄 새로고침", width='stretch'):
-                st.cache_data.clear()
-                st.rerun()
-
-        with col4:
-            st.empty()
-
-        st.divider()
-
-        # 입출금 & 비용 추가
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.markdown("**💵 입출금 수동 추가**")
-            dep_col1, dep_col2 = st.columns(2)
-            with dep_col1:
-                dep_type = st.selectbox("유형", ["deposit", "withdraw"], format_func=lambda x: "입금" if x == "deposit" else "출금", key="dep_type")
-                dep_amt = st.number_input("금액", min_value=0, step=10000, key="dep_amt")
-            with dep_col2:
-                dep_memo = st.text_input("메모", key="dep_memo")
-                if st.button("입출금 추가", key="add_dep", width='stretch'):
-                    if dep_amt > 0 and add_deposit(dep_amt, dep_type, dep_memo):
-                        st.success("완료")
-                        st.cache_data.clear()
-                        st.rerun()
-
-        with col2:
-            st.markdown("**💸 비용 수동 추가**")
-            exp_col1, exp_col2 = st.columns(2)
-            with exp_col1:
-                exp_cat = st.selectbox("카테고리", ["api", "server", "other"], format_func=lambda x: {"api": "API", "server": "서버", "other": "기타"}[x], key="exp_cat")
-                exp_name = st.text_input("항목명", key="exp_name")
-                exp_amt = st.number_input("금액 (원)", min_value=0, step=1000, key="exp_amt")
-            with exp_col2:
-                exp_period = st.selectbox("주기", ["monthly", "daily", "yearly", "one-time"], format_func=lambda x: {"monthly": "월", "daily": "일", "yearly": "연", "one-time": "1회"}[x], key="exp_period")
-                exp_memo = st.text_input("메모 (선택)", key="exp_memo")
-                if st.button("비용 추가", key="add_exp", width='stretch'):
-                    if exp_amt > 0 and exp_name and add_expense(exp_cat, exp_name, exp_amt, exp_period, exp_memo):
-                        st.success("완료")
-                        st.cache_data.clear()
-                        st.rerun()
-                    else:
-                        st.error("항목명과 금액을 입력하세요")
-
-    # ===== 데이터 로드 =====
+def render_coin_dashboard(days, chart_start_date):
+    """코인 대시보드 렌더링"""
     trades_df = get_trades_from_supabase(days)
     deposits_df = get_all_deposits()
     expenses_df = get_expenses()
@@ -612,166 +676,112 @@ def main():
     trading_fees = get_trading_fees(orders_df, days)
     btc_price = get_current_btc_price()
 
-    # ===== 헤더 =====
+    # 헤더
     col1, col2 = st.columns([3, 1])
     with col1:
-        st.title("📈 JWCoin Dashboard")
+        st.markdown("### 💰 비트코인 자동매매")
     with col2:
         if btc_price:
             st.metric("BTC", f"₩{format_krw(btc_price)}")
 
     if trades_df.empty:
         st.warning("거래 기록이 없습니다.")
-        st.stop()
+        return
 
-    # 성과 계산 (현재 BTC 가격 기준, 거래 수수료 포함)
     perf = calculate_performance(trades_df, deposits_df, expenses_df, btc_price, days, trading_fees)
     latest = trades_df.iloc[0]
     btc_val = latest['btc_balance'] * (btc_price or latest['btc_krw_price'])
     total_asset = latest['krw_balance'] + btc_val
 
-    # ===== 현재 자산 =====
-    st.markdown("## 💰 현재 자산")
+    # 현재 자산
+    st.markdown("#### 현재 자산")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("BTC 보유", f"{latest['btc_balance']:.6f}")
     c2.metric("BTC 가치", f"₩{format_krw(btc_val)}")
     c3.metric("KRW 보유", f"₩{format_krw(latest['krw_balance'])}")
     c4.metric("총 자산", f"₩{format_krw(total_asset)}")
 
-    # ===== 투자 성과 =====
-    st.markdown("## 📊 투자 성과")
+    # 투자 성과
+    st.markdown("#### 투자 성과")
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("순입금", f"₩{format_krw(perf.get('net_deposits', 0))}", help="입금 - 출금")
+    c1.metric("순입금", f"₩{format_krw(perf.get('net_deposits', 0))}")
     c2.metric("현재 총자산", f"₩{format_krw(perf.get('current_total', 0))}")
-    c3.metric("실질수익", f"₩{format_krw(perf.get('real_profit', 0))}", f"{perf.get('real_rate', 0):+.2f}%", help="총자산 - 순입금")
+    c3.metric("실질수익", f"₩{format_krw(perf.get('real_profit', 0))}", f"{perf.get('real_rate', 0):+.2f}%")
     c4.metric("운영비용", f"₩{format_krw(perf.get('monthly_expenses', 0))}/월")
-    c5.metric("순수익", f"₩{format_krw(perf.get('net_profit', 0))}", f"{perf.get('net_rate', 0):+.2f}%", help="실질수익 - 운영비용")
+    c5.metric("순수익", f"₩{format_krw(perf.get('net_profit', 0))}", f"{perf.get('net_rate', 0):+.2f}%")
 
-    # ===== 차트 =====
-    st.markdown("## 📈 차트")
-
-    # 상단: 자산 추이 & 실질 수익 (2열)
+    # 차트
+    st.markdown("#### 차트")
     c1, c2 = st.columns(2)
     with c1:
         st.caption(f"자산 증감 ({chart_start_date} 이후)")
-        st.plotly_chart(create_asset_chart(trades_df, deposits_df, btc_price, chart_start_date), width='stretch', config={'displayModeBar': False})
+        st.plotly_chart(create_asset_chart(trades_df, deposits_df, btc_price, chart_start_date), use_container_width=True, config={'displayModeBar': False})
     with c2:
         st.caption(f"실질 수익 추이 ({chart_start_date} 이후)")
-        st.plotly_chart(create_profit_chart(trades_df, deposits_df, btc_price, chart_start_date), width='stretch', config={'displayModeBar': False})
+        st.plotly_chart(create_profit_chart(trades_df, deposits_df, btc_price, chart_start_date), use_container_width=True, config={'displayModeBar': False})
 
-    # 하단: 3개 차트
     c1, c2, c3 = st.columns(3)
     with c1:
         st.caption("BTC 보유량")
-        st.plotly_chart(create_btc_chart(trades_df), width='stretch', config={'displayModeBar': False})
+        st.plotly_chart(create_btc_chart(trades_df), use_container_width=True, config={'displayModeBar': False})
     with c2:
         st.caption("거래 결정")
-        st.plotly_chart(create_decision_chart(trades_df), width='stretch', config={'displayModeBar': False})
+        st.plotly_chart(create_decision_chart(trades_df), use_container_width=True, config={'displayModeBar': False})
     with c3:
         st.caption("비용 분포")
-        st.plotly_chart(create_expense_chart(perf.get('expenses_by_cat', {})), width='stretch', config={'displayModeBar': False})
+        st.plotly_chart(create_expense_chart(perf.get('expenses_by_cat', {})), use_container_width=True, config={'displayModeBar': False})
 
-    # ===== 기록 탭 =====
-    st.markdown("## 📋 기록")
+    # 기록 탭
+    st.markdown("#### 기록")
     tab1, tab2, tab3, tab4 = st.tabs(["거래", "체결내역", "입출금", "비용"])
 
     with tab1:
         if not trades_df.empty:
-            # 기본 컬럼
             cols = ['timestamp', 'decision', 'percentage']
-
-            # source 컬럼이 있으면 추가
             if 'source' in trades_df.columns:
                 cols.append('source')
-
-            # model 컬럼이 있으면 추가
             if 'model' in trades_df.columns:
                 cols.append('model')
-
-            # pnl_percentage 컬럼이 있으면 추가
             if 'pnl_percentage' in trades_df.columns:
                 cols.append('pnl_percentage')
-
             cols.extend(['btc_balance', 'btc_krw_price', 'reason'])
 
-            # trigger_reason이 있으면 추가
-            if 'trigger_reason' in trades_df.columns:
-                cols.append('trigger_reason')
-
-            # 페이지네이션 설정
-            page_size = 20
+            page_size = 15
             total_records = len(trades_df)
             total_pages = max(1, (total_records + page_size - 1) // page_size)
 
-            if 'trades_page' not in st.session_state:
-                st.session_state.trades_page = 1
+            if 'coin_trades_page' not in st.session_state:
+                st.session_state.coin_trades_page = 1
 
-            # 페이지네이션 버튼
             col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
             with col1:
-                if st.button('⏮️', key='trades_first', help='처음'):
-                    st.session_state.trades_page = 1
+                if st.button('⏮️', key='coin_first'):
+                    st.session_state.coin_trades_page = 1
             with col2:
-                if st.button('◀️', key='trades_prev', help='이전'):
-                    if st.session_state.trades_page > 1:
-                        st.session_state.trades_page -= 1
+                if st.button('◀️', key='coin_prev'):
+                    if st.session_state.coin_trades_page > 1:
+                        st.session_state.coin_trades_page -= 1
             with col3:
-                st.markdown(f"<p style='text-align:center; margin-top:8px;'>{st.session_state.trades_page} / {total_pages} ({total_records}건)</p>", unsafe_allow_html=True)
+                st.markdown(f"<p style='text-align:center; margin-top:8px;'>{st.session_state.coin_trades_page} / {total_pages}</p>", unsafe_allow_html=True)
             with col4:
-                if st.button('▶️', key='trades_next', help='다음'):
-                    if st.session_state.trades_page < total_pages:
-                        st.session_state.trades_page += 1
+                if st.button('▶️', key='coin_next'):
+                    if st.session_state.coin_trades_page < total_pages:
+                        st.session_state.coin_trades_page += 1
             with col5:
-                if st.button('⏭️', key='trades_last', help='끝'):
-                    st.session_state.trades_page = total_pages
+                if st.button('⏭️', key='coin_last'):
+                    st.session_state.coin_trades_page = total_pages
 
-            start_idx = (st.session_state.trades_page - 1) * page_size
+            start_idx = (st.session_state.coin_trades_page - 1) * page_size
             end_idx = start_idx + page_size
-
-            # 거래 금액 계산 (추정) - 원본 데이터에서 계산
-            def calc_trade_amount(row):
-                try:
-                    decision = row['decision']
-                    pct = row['percentage']
-                    if decision == 'buy':
-                        krw = row['krw_balance']
-                        if pct < 100 and pct > 0:
-                            krw_before = krw / (1 - pct/100)
-                            return krw_before - krw
-                        return 0
-                    elif decision in ['sell', 'partial_sell']:
-                        btc = row['btc_balance']
-                        price = row['btc_krw_price']
-                        if pct < 100 and pct > 0:
-                            btc_before = btc / (1 - pct/100)
-                            return (btc_before - btc) * price
-                        return btc * price
-                    return 0
-                except:
-                    return 0
-
-            # 원본에서 거래금액 계산
             page_data = trades_df.iloc[start_idx:end_idx].copy()
-            page_data['trade_amount'] = page_data.apply(calc_trade_amount, axis=1)
 
-            # 표시할 컬럼 선택
             display = page_data[[c for c in cols if c in page_data.columns]].copy()
-            display['trade_amount'] = page_data['trade_amount']
             display['timestamp'] = display['timestamp'].dt.strftime('%m/%d %H:%M')
-            display['trade_amount'] = display['trade_amount'].apply(lambda x: f"₩{x:,.0f}" if x > 0 else "-")
-
             display['decision'] = display['decision'].map({'buy': '🟢매수', 'sell': '🔴매도', 'hold': '⚪홀드', 'partial_sell': '🟡부분매도'})
 
-            # source 포맷팅
             if 'source' in display.columns:
-                display['source'] = display['source'].map({
-                    'scheduled': '🕐정기',
-                    'triggered': '⚡긴급',
-                    'stop_loss': '🛑손절',
-                    'take_profit': '💰익절'
-                }).fillna('🕐정기')
+                display['source'] = display['source'].map({'scheduled': '🕐정기', 'triggered': '⚡긴급', 'stop_loss': '🛑손절', 'take_profit': '💰익절'}).fillna('🕐정기')
 
-            # model 포맷팅 (짧게 표시)
             if 'model' in display.columns:
                 def format_model(m):
                     if pd.isna(m) or not m:
@@ -782,72 +792,18 @@ def main():
                         return '🟢Haiku'
                     if 'opus' in str(m).lower():
                         return '🔴Opus'
-                    if 'gpt-4' in str(m).lower():
-                        return '🔵GPT-4'
                     return str(m)[:10]
                 display['model'] = display['model'].apply(format_model)
 
-            # pnl_percentage 포맷팅
-            if 'pnl_percentage' in display.columns:
-                display['pnl_percentage'] = display['pnl_percentage'].apply(
-                    lambda x: f"{x*100:+.1f}%" if pd.notna(x) and x != 0 else "-"
-                )
-
             display['btc_balance'] = display['btc_balance'].apply(lambda x: f"{x:.4f}")
             display['btc_krw_price'] = display['btc_krw_price'].apply(lambda x: f"{x:,.0f}")
+            display['reason'] = display['reason'].apply(lambda x: str(x)[:50] + '...' if pd.notna(x) and len(str(x)) > 50 else str(x) if pd.notna(x) else "-")
 
-            # reason, trigger_reason은 자르지 않음 (전체 표시)
-            display['reason'] = display['reason'].apply(lambda x: str(x) if pd.notna(x) else "-")
-
-            if 'trigger_reason' in display.columns:
-                display['trigger_reason'] = display['trigger_reason'].apply(
-                    lambda x: str(x) if pd.notna(x) and str(x).strip() else "-"
-                )
-
-            # 컬럼명 변경
-            col_names = {
-                'timestamp': '시간', 'decision': '결정', 'percentage': '%',
-                'trade_amount': '거래금액', 'source': '출처', 'model': '모델',
-                'pnl_percentage': '손익', 'btc_balance': 'BTC', 'btc_krw_price': '가격',
-                'reason': '이유', 'trigger_reason': '트리거'
-            }
+            col_names = {'timestamp': '시간', 'decision': '결정', 'percentage': '%', 'source': '출처', 'model': '모델', 'pnl_percentage': '손익', 'btc_balance': 'BTC', 'btc_krw_price': '가격', 'reason': '이유'}
             display.columns = [col_names.get(c, c) for c in display.columns]
-
-            st.dataframe(
-                display,
-                width='stretch',
-                hide_index=True,
-                height=450,
-                column_config={
-                    '이유': st.column_config.TextColumn('이유', width='large', help='클릭하여 전체 내용 보기'),
-                    '트리거': st.column_config.TextColumn('트리거', width='medium', help='클릭하여 전체 내용 보기'),
-                }
-            )
-
-            # 상세 보기 (선택한 거래의 전체 reason/trigger 표시)
-            with st.expander("📋 상세 보기 & 번역"):
-                page_trades = trades_df.iloc[start_idx:end_idx]
-                idx = st.selectbox(
-                    "거래 선택",
-                    range(len(page_trades)),
-                    format_func=lambda i: f"{page_trades.iloc[i]['timestamp'].strftime('%m/%d %H:%M')} - {page_trades.iloc[i]['decision']}"
-                )
-                selected = page_trades.iloc[idx]
-
-                st.markdown("**이유 (Reason):**")
-                st.text_area("", value=str(selected.get('reason', '-')), height=150, disabled=True, key="reason_view")
-
-                if 'trigger_reason' in selected and pd.notna(selected['trigger_reason']) and str(selected['trigger_reason']).strip():
-                    st.markdown("**트리거 (Trigger):**")
-                    st.text_area("", value=str(selected['trigger_reason']), height=80, disabled=True, key="trigger_view")
-
-                if st.button("🌐 번역", key="tr_reason"):
-                    with st.spinner("번역 중..."):
-                        st.success(translate_to_korean(str(selected.get('reason', ''))))
+            st.dataframe(display, use_container_width=True, hide_index=True, height=400)
 
     with tab2:
-        # 업비트 체결 내역
-        orders_df = get_upbit_orders()
         if not orders_df.empty:
             ord_display = orders_df.copy()
             ord_display['created_at'] = ord_display['created_at'].dt.strftime('%m/%d %H:%M')
@@ -855,41 +811,7 @@ def main():
             ord_display['price'] = ord_display['price'].apply(lambda x: f"₩{x:,.0f}" if pd.notna(x) else "-")
             ord_display['executed_volume'] = ord_display['executed_volume'].apply(lambda x: f"{x:.6f}")
             ord_display['paid_fee'] = ord_display['paid_fee'].apply(lambda x: f"₩{x:,.0f}" if pd.notna(x) else "-")
-
-            # 페이지네이션
-            ord_page_size = 20
-            ord_total = len(ord_display)
-            ord_total_pages = max(1, (ord_total + ord_page_size - 1) // ord_page_size)
-
-            if 'ord_page' not in st.session_state:
-                st.session_state.ord_page = 1
-
-            col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
-            with col1:
-                if st.button('⏮️', key='ord_first', help='처음'):
-                    st.session_state.ord_page = 1
-            with col2:
-                if st.button('◀️', key='ord_prev', help='이전'):
-                    if st.session_state.ord_page > 1:
-                        st.session_state.ord_page -= 1
-            with col3:
-                st.markdown(f"<p style='text-align:center; margin-top:8px;'>{st.session_state.ord_page} / {ord_total_pages} ({ord_total}건)</p>", unsafe_allow_html=True)
-            with col4:
-                if st.button('▶️', key='ord_next', help='다음'):
-                    if st.session_state.ord_page < ord_total_pages:
-                        st.session_state.ord_page += 1
-            with col5:
-                if st.button('⏭️', key='ord_last', help='끝'):
-                    st.session_state.ord_page = ord_total_pages
-
-            ord_start = (st.session_state.ord_page - 1) * ord_page_size
-            ord_end = ord_start + ord_page_size
-
-            st.dataframe(
-                ord_display[['created_at', 'side', 'price', 'executed_volume', 'paid_fee']].iloc[ord_start:ord_end],
-                width='stretch', hide_index=True,
-                column_config={'created_at': '시간', 'side': '구분', 'price': '체결가', 'executed_volume': '체결량(BTC)', 'paid_fee': '수수료'}
-            )
+            st.dataframe(ord_display[['created_at', 'side', 'price', 'executed_volume', 'paid_fee']].head(20), use_container_width=True, hide_index=True, column_config={'created_at': '시간', 'side': '구분', 'price': '체결가', 'executed_volume': 'BTC', 'paid_fee': '수수료'})
         else:
             st.info("체결 내역 없음")
 
@@ -899,47 +821,7 @@ def main():
             dep['created_at'] = dep['created_at'].dt.strftime('%m/%d %H:%M')
             dep['type'] = dep['type'].map({'deposit': '🟢입금', 'withdraw': '🔴출금'})
             dep['amount'] = dep['amount'].apply(lambda x: f"₩{x:,.0f}")
-            dep['source'] = dep['memo'].apply(lambda x: '업비트' if '업비트' in str(x) else '수동')
-
-            # 페이지네이션
-            dep_page_size = 20
-            dep_total = len(dep)
-            dep_total_pages = max(1, (dep_total + dep_page_size - 1) // dep_page_size)
-
-            if 'dep_page' not in st.session_state:
-                st.session_state.dep_page = 1
-
-            col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
-            with col1:
-                if st.button('⏮️', key='dep_first', help='처음'):
-                    st.session_state.dep_page = 1
-            with col2:
-                if st.button('◀️', key='dep_prev', help='이전'):
-                    if st.session_state.dep_page > 1:
-                        st.session_state.dep_page -= 1
-            with col3:
-                st.markdown(f"<p style='text-align:center; margin-top:8px;'>{st.session_state.dep_page} / {dep_total_pages} ({dep_total}건)</p>", unsafe_allow_html=True)
-            with col4:
-                if st.button('▶️', key='dep_next', help='다음'):
-                    if st.session_state.dep_page < dep_total_pages:
-                        st.session_state.dep_page += 1
-            with col5:
-                if st.button('⏭️', key='dep_last', help='끝'):
-                    st.session_state.dep_page = dep_total_pages
-
-            dep_start = (st.session_state.dep_page - 1) * dep_page_size
-            dep_end = dep_start + dep_page_size
-
-            st.dataframe(dep[['created_at', 'type', 'amount', 'source', 'memo']].iloc[dep_start:dep_end], width='stretch', hide_index=True, column_config={'created_at': '시간', 'type': '유형', 'amount': '금액', 'source': '출처', 'memo': '메모'})
-
-            manual = get_manual_deposits()
-            if not manual.empty:
-                with st.expander("수동 입력 삭제"):
-                    del_id = st.number_input("삭제 ID", min_value=1, step=1, key="del_dep")
-                    if st.button("삭제", key="del_dep_btn"):
-                        if delete_deposit(del_id):
-                            st.cache_data.clear()
-                            st.rerun()
+            st.dataframe(dep[['created_at', 'type', 'amount', 'memo']].head(20), use_container_width=True, hide_index=True, column_config={'created_at': '시간', 'type': '유형', 'amount': '금액', 'memo': '메모'})
         else:
             st.info("입출금 기록 없음")
 
@@ -948,65 +830,272 @@ def main():
             exp = expenses_df.copy()
             exp['created_at'] = exp['created_at'].dt.strftime('%m/%d %H:%M')
             exp['category'] = exp['category'].map({'api': '🔴API', 'server': '🟢서버', 'other': '⚪기타'})
-            exp['period'] = exp['period'].map({'monthly': '월', 'daily': '일', 'yearly': '연', 'one-time': '1회'})
             exp['amount'] = exp['amount'].apply(lambda x: f"₩{x:,.0f}")
-
-            # 페이지네이션
-            exp_page_size = 20
-            exp_total = len(exp)
-            exp_total_pages = max(1, (exp_total + exp_page_size - 1) // exp_page_size)
-
-            if 'exp_page' not in st.session_state:
-                st.session_state.exp_page = 1
-
-            col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
-            with col1:
-                if st.button('⏮️', key='exp_first', help='처음'):
-                    st.session_state.exp_page = 1
-            with col2:
-                if st.button('◀️', key='exp_prev', help='이전'):
-                    if st.session_state.exp_page > 1:
-                        st.session_state.exp_page -= 1
-            with col3:
-                st.markdown(f"<p style='text-align:center; margin-top:8px;'>{st.session_state.exp_page} / {exp_total_pages} ({exp_total}건)</p>", unsafe_allow_html=True)
-            with col4:
-                if st.button('▶️', key='exp_next', help='다음'):
-                    if st.session_state.exp_page < exp_total_pages:
-                        st.session_state.exp_page += 1
-            with col5:
-                if st.button('⏭️', key='exp_last', help='끝'):
-                    st.session_state.exp_page = exp_total_pages
-
-            exp_start = (st.session_state.exp_page - 1) * exp_page_size
-            exp_end = exp_start + exp_page_size
-
-            st.dataframe(exp[['id', 'created_at', 'category', 'name', 'amount', 'period']].iloc[exp_start:exp_end], width='stretch', hide_index=True, column_config={'id': 'ID', 'created_at': '등록', 'category': '분류', 'name': '항목', 'amount': '금액', 'period': '주기'})
-
-            with st.expander("비용 삭제"):
-                del_id = st.number_input("삭제 ID", min_value=1, step=1, key="del_exp")
-                if st.button("삭제", key="del_exp_btn"):
-                    if delete_expense(del_id):
-                        st.cache_data.clear()
-                        st.rerun()
+            st.dataframe(exp[['id', 'created_at', 'category', 'name', 'amount', 'period']].head(20), use_container_width=True, hide_index=True)
         else:
             st.info("비용 기록 없음")
 
-    # ===== AI 분석 =====
-    if 'reflection' in trades_df.columns and trades_df.iloc[0].get('reflection'):
-        st.markdown("## 🤖 AI 분석")
-        reflection = trades_df.iloc[0]['reflection']
-        st.caption(reflection[:200] + '...' if len(reflection) > 200 else reflection)
-        if st.button("전체 보기 & 번역", key="tr_ref"):
-            st.info(reflection)
-            with st.spinner("번역 중..."):
-                st.success(translate_to_korean(reflection))
-
-    # ===== 푸터 =====
+    # 푸터
     st.divider()
-    c1, c2, c3 = st.columns(3)
+    c1, c2 = st.columns(2)
     c1.caption(f"거래: {perf.get('total_trades', 0)}회 (매수 {perf.get('buy_count', 0)} / 매도 {perf.get('sell_count', 0)} / 홀드 {perf.get('hold_count', 0)})")
     c2.caption(f"🕐정기 {perf.get('scheduled_count', 0)} / ⚡긴급 {perf.get('triggered_count', 0)} / 🛑손절 {perf.get('stop_loss_count', 0)} / 💰익절 {perf.get('take_profit_count', 0)}")
-    c3.caption(f"업데이트: {datetime.now(KST).strftime('%Y-%m-%d %H:%M')} KST")
+
+# ============================================================================
+# 미국 주식 대시보드
+# ============================================================================
+
+def render_us_stock_dashboard(days):
+    """미국 주식 대시보드 렌더링"""
+
+    # 시장 지수
+    indices = get_market_indices()
+    sectors = get_sector_performance()
+
+    # 헤더 - 시장 지수
+    st.markdown("### 📊 미국 주식 자동매매")
+
+    if indices:
+        cols = st.columns(len(indices))
+        for i, (name, data) in enumerate(indices.items()):
+            with cols[i]:
+                if name == "VIX":
+                    st.metric(name, f"{data['price']:.1f}", f"{data['change_pct']:+.2f}%", delta_color="inverse")
+                else:
+                    st.metric(name, f"{data['price']:,.0f}", f"{data['change_pct']:+.2f}%")
+
+    # 포트폴리오 데이터
+    portfolio_df = get_us_portfolio_snapshots(days)
+    trades_df = get_us_stock_trades(days)
+
+    # 포트폴리오 현황
+    st.markdown("#### 포트폴리오 현황")
+
+    if not portfolio_df.empty:
+        latest = portfolio_df.iloc[0]
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("총 자산", format_usd(latest.get('total_value', 0)))
+        c2.metric("현금", format_usd(latest.get('cash', 0)), f"{latest.get('cash_ratio', 0)*100:.1f}%")
+        c3.metric("투자금", format_usd(latest.get('invested', 0)))
+        c4.metric("미실현 손익", format_usd(latest.get('unrealized_pnl', 0)), f"{latest.get('unrealized_pnl_pct', 0)*100:+.2f}%")
+
+        # 보유 종목
+        positions = latest.get('positions')
+        if positions and isinstance(positions, dict):
+            st.markdown("#### 보유 종목")
+            pos_data = []
+            for symbol, pos in positions.items():
+                if isinstance(pos, dict):
+                    pos_data.append({
+                        '종목': symbol,
+                        '수량': pos.get('quantity', 0),
+                        '평균단가': f"${pos.get('avg_price', 0):.2f}",
+                        '현재가': f"${pos.get('current_price', 0):.2f}",
+                        '손익': f"${pos.get('unrealized_pnl', 0):+.2f}",
+                        '수익률': f"{pos.get('unrealized_pnl_pct', 0)*100:+.2f}%",
+                    })
+            if pos_data:
+                st.dataframe(pd.DataFrame(pos_data), use_container_width=True, hide_index=True)
+    else:
+        st.info("포트폴리오 데이터가 없습니다. 자동매매 시스템이 실행되면 데이터가 표시됩니다.")
+
+        # 데모 데이터 표시
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("총 자산", "$0.00")
+        c2.metric("현금", "$0.00", "0%")
+        c3.metric("투자금", "$0.00")
+        c4.metric("미실현 손익", "$0.00", "0%")
+
+    # 차트
+    st.markdown("#### 차트")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.caption("포트폴리오 추이")
+        st.plotly_chart(create_us_portfolio_chart(portfolio_df), use_container_width=True, config={'displayModeBar': False})
+    with c2:
+        st.caption("미실현 손익 추이")
+        st.plotly_chart(create_us_pnl_chart(portfolio_df), use_container_width=True, config={'displayModeBar': False})
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.caption("섹터 성과 (전일 대비)")
+        st.plotly_chart(create_sector_chart(sectors), use_container_width=True, config={'displayModeBar': False})
+    with c2:
+        st.caption("거래 유형")
+        st.plotly_chart(create_us_trade_decision_chart(trades_df), use_container_width=True, config={'displayModeBar': False})
+
+    # 거래 기록
+    st.markdown("#### 거래 기록")
+    if not trades_df.empty:
+        page_size = 15
+        total_records = len(trades_df)
+        total_pages = max(1, (total_records + page_size - 1) // page_size)
+
+        if 'us_trades_page' not in st.session_state:
+            st.session_state.us_trades_page = 1
+
+        col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
+        with col1:
+            if st.button('⏮️', key='us_first'):
+                st.session_state.us_trades_page = 1
+        with col2:
+            if st.button('◀️', key='us_prev'):
+                if st.session_state.us_trades_page > 1:
+                    st.session_state.us_trades_page -= 1
+        with col3:
+            st.markdown(f"<p style='text-align:center; margin-top:8px;'>{st.session_state.us_trades_page} / {total_pages}</p>", unsafe_allow_html=True)
+        with col4:
+            if st.button('▶️', key='us_next'):
+                if st.session_state.us_trades_page < total_pages:
+                    st.session_state.us_trades_page += 1
+        with col5:
+            if st.button('⏭️', key='us_last'):
+                st.session_state.us_trades_page = total_pages
+
+        start_idx = (st.session_state.us_trades_page - 1) * page_size
+        end_idx = start_idx + page_size
+        page_data = trades_df.iloc[start_idx:end_idx].copy()
+
+        # 컬럼 선택
+        display_cols = ['created_at', 'symbol', 'action', 'quantity', 'price', 'amount']
+        if 'pnl' in page_data.columns:
+            display_cols.append('pnl')
+        if 'model' in page_data.columns:
+            display_cols.append('model')
+
+        display = page_data[[c for c in display_cols if c in page_data.columns]].copy()
+        display['created_at'] = display['created_at'].dt.strftime('%m/%d %H:%M')
+
+        if 'action' in display.columns:
+            display['action'] = display['action'].map({'buy': '🟢매수', 'sell': '🔴매도', 'stop_loss': '🛑손절', 'take_profit': '💰익절'})
+
+        if 'price' in display.columns:
+            display['price'] = display['price'].apply(lambda x: f"${x:.2f}" if pd.notna(x) else "-")
+        if 'amount' in display.columns:
+            display['amount'] = display['amount'].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "-")
+        if 'pnl' in display.columns:
+            display['pnl'] = display['pnl'].apply(lambda x: f"${x:+.2f}" if pd.notna(x) else "-")
+
+        if 'model' in display.columns:
+            def format_model(m):
+                if pd.isna(m) or not m:
+                    return "-"
+                if 'sonnet' in str(m).lower():
+                    return '🟣Sonnet'
+                if 'haiku' in str(m).lower():
+                    return '🟢Haiku'
+                return str(m)[:10]
+            display['model'] = display['model'].apply(format_model)
+
+        col_names = {'created_at': '시간', 'symbol': '종목', 'action': '거래', 'quantity': '수량', 'price': '가격', 'amount': '금액', 'pnl': '손익', 'model': '모델'}
+        display.columns = [col_names.get(c, c) for c in display.columns]
+
+        st.dataframe(display, use_container_width=True, hide_index=True, height=400)
+    else:
+        st.info("거래 기록이 없습니다.")
+
+    # 푸터
+    st.divider()
+    buy_count = len(trades_df[trades_df['action'] == 'buy']) if not trades_df.empty and 'action' in trades_df.columns else 0
+    sell_count = len(trades_df[trades_df['action'] == 'sell']) if not trades_df.empty and 'action' in trades_df.columns else 0
+    st.caption(f"거래: {len(trades_df)}회 (매수 {buy_count} / 매도 {sell_count}) | 업데이트: {datetime.now(KST).strftime('%Y-%m-%d %H:%M')} KST")
+
+# ============================================================================
+# 메인 앱
+# ============================================================================
+
+def main():
+    st.set_page_config(page_title="JWCoin Dashboard", page_icon="📈", layout="wide")
+
+    # CSS
+    st.markdown("""
+    <style>
+    header[data-testid="stHeader"] { display: none !important; }
+    #MainMenu { visibility: hidden; }
+    footer { visibility: hidden; }
+    [data-testid="stSidebar"] { display: none !important; }
+    [data-testid="collapsedControl"] { display: none !important; }
+    .block-container { padding: 1rem 2rem; max-width: 100%; }
+    h1 { font-size: 1.5rem !important; font-weight: 600 !important; margin-bottom: 0.5rem !important; }
+    h2 { font-size: 1.1rem !important; font-weight: 500 !important; margin: 1rem 0 0.5rem 0 !important; }
+    h3 { font-size: 1rem !important; font-weight: 500 !important; }
+    [data-testid="stMetric"] { border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 0.8rem; }
+    [data-testid="stMetricLabel"] { font-size: 0.75rem; }
+    [data-testid="stMetricValue"] { font-size: 1.1rem; font-weight: 600; }
+    .stTabs [data-baseweb="tab-list"] { gap: 8px; }
+    .stTabs [data-baseweb="tab"] { border-radius: 8px; padding: 8px 16px; font-size: 0.85rem; }
+    .stDataFrame { border-radius: 8px; overflow: hidden; }
+    .stButton > button { border-radius: 8px; font-size: 0.85rem; padding: 0.4rem 1rem; }
+    hr { margin: 1rem 0; }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # 헤더
+    col1, col2, col3 = st.columns([2, 1, 1])
+    with col1:
+        st.title("📈 JWCoin Dashboard")
+    with col2:
+        days = st.selectbox("조회 기간", [7, 14, 30, 60, 90], index=2, format_func=lambda x: f"{x}일")
+    with col3:
+        if st.button("🔄 새로고침"):
+            st.cache_data.clear()
+            st.rerun()
+
+    # 메인 탭 - 코인 / 미국 주식
+    main_tab1, main_tab2 = st.tabs(["🪙 비트코인", "🇺🇸 미국 주식"])
+
+    with main_tab1:
+        # 코인 전용 설정
+        with st.expander("⚙️ 코인 설정", expanded=False):
+            col1, col2 = st.columns(2)
+            with col1:
+                chart_start_date = st.date_input(
+                    "차트 시작일",
+                    value=datetime.now(KST) - timedelta(days=7),
+                    max_value=datetime.now(KST).date(),
+                    key="coin_chart_date"
+                )
+            with col2:
+                st.empty()
+
+            st.divider()
+
+            # 입출금 & 비용 추가
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("**💵 입출금 수동 추가**")
+                dep_col1, dep_col2 = st.columns(2)
+                with dep_col1:
+                    dep_type = st.selectbox("유형", ["deposit", "withdraw"], format_func=lambda x: "입금" if x == "deposit" else "출금", key="dep_type")
+                    dep_amt = st.number_input("금액", min_value=0, step=10000, key="dep_amt")
+                with dep_col2:
+                    dep_memo = st.text_input("메모", key="dep_memo")
+                    if st.button("입출금 추가", key="add_dep"):
+                        if dep_amt > 0 and add_deposit(dep_amt, dep_type, dep_memo):
+                            st.success("완료")
+                            st.cache_data.clear()
+                            st.rerun()
+
+            with col2:
+                st.markdown("**💸 비용 수동 추가**")
+                exp_col1, exp_col2 = st.columns(2)
+                with exp_col1:
+                    exp_cat = st.selectbox("카테고리", ["api", "server", "other"], format_func=lambda x: {"api": "API", "server": "서버", "other": "기타"}[x], key="exp_cat")
+                    exp_name = st.text_input("항목명", key="exp_name")
+                    exp_amt = st.number_input("금액 (원)", min_value=0, step=1000, key="exp_amt")
+                with exp_col2:
+                    exp_period = st.selectbox("주기", ["monthly", "daily", "yearly"], format_func=lambda x: {"monthly": "월", "daily": "일", "yearly": "연"}[x], key="exp_period")
+                    exp_memo = st.text_input("메모 (선택)", key="exp_memo")
+                    if st.button("비용 추가", key="add_exp"):
+                        if exp_amt > 0 and exp_name and add_expense(exp_cat, exp_name, exp_amt, exp_period, exp_memo):
+                            st.success("완료")
+                            st.cache_data.clear()
+                            st.rerun()
+
+        render_coin_dashboard(days, chart_start_date)
+
+    with main_tab2:
+        render_us_stock_dashboard(days)
 
 if __name__ == "__main__":
     main()

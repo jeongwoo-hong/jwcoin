@@ -1,10 +1,13 @@
 """
 기술지표 계산 모듈
 """
+import logging
 import pandas as pd
 import numpy as np
 from typing import Dict, Optional
 import pyupbit
+
+logger = logging.getLogger(__name__)
 
 def calculate_rsi(prices: pd.Series, period: int = 14) -> float:
     """RSI 계산"""
@@ -74,5 +77,5 @@ def calculate_indicators(ticker: str = "KRW-BTC") -> Optional[Dict]:
             "timestamp": df.index[-1]
         }
     except Exception as e:
-        print(f"Indicator calculation error: {e}")
+        logger.error(f"Indicator calculation error: {e}")
         return None

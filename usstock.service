@@ -1,0 +1,15 @@
+[Unit]
+Description=US Stock Auto Trader
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/jwcoin
+Environment="PATH=/home/ubuntu/jwcoin/venv/bin"
+ExecStart=/home/ubuntu/jwcoin/venv/bin/python us_stock_trader.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

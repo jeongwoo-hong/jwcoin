@@ -8,8 +8,9 @@ import logging
 import pyupbit
 from typing import Dict, Optional
 from datetime import datetime
-from supabase import create_client, Client
 from config import settings
+from config.database import get_supabase
+from core.types import TradeDecision
 
 logger = logging.getLogger(__name__)
 
@@ -19,10 +20,7 @@ class TradeExecutor:
             os.getenv("UPBIT_ACCESS_KEY"),
             os.getenv("UPBIT_SECRET_KEY")
         )
-        self.supabase: Client = create_client(
-            os.getenv("SUPABASE_URL"),
-            os.getenv("SUPABASE_KEY")
-        )
+        self.supabase = get_supabase()
         
         self.lock = threading.Lock()
         self.last_trade_time = None
@@ -105,30 +103,30 @@ class TradeExecutor:
                 
                 order = None
                 
-                if decision == "buy":
+                if decision == TradeDecision.BUY:
                     krw = balance["krw_balance"]
-                    buy_amount = krw * (percentage / 100) * 0.9995
-                    
-                    if buy_amount < 5000:
+                    buy_amount = krw * (percentage / 100) * settings.UPBIT_FEE_RATE
+
+                    if buy_amount < settings.UPBIT_MIN_ORDER_KRW:
                         logger.warning("Buy amount too small")
                         return False
-                    
+
                     order = self.upbit.buy_market_order("KRW-BTC", buy_amount)
                     logger.info(f"BUY executed: {buy_amount:,.0f} KRW ({percentage}%)")
-                
-                elif decision in ["sell", "partial_sell"]:
+
+                elif decision in [TradeDecision.SELL, TradeDecision.PARTIAL_SELL]:
                     btc = balance["btc_balance"]
                     sell_amount = btc * (percentage / 100)
                     current_price = balance["current_price"]
 
-                    if sell_amount * current_price < 5000:
+                    if sell_amount * current_price < settings.UPBIT_MIN_ORDER_KRW:
                         logger.warning("Sell amount too small")
                         return False
 
                     order = self.upbit.sell_market_order("KRW-BTC", sell_amount)
                     logger.info(f"SELL executed: {sell_amount:.6f} BTC ({percentage}%)")
-                
-                elif decision == "hold":
+
+                elif decision == TradeDecision.HOLD:
                     logger.info("HOLD - No action")
                     order = True  # 로깅은 하지만 실제 주문 없음
                 
@@ -162,15 +160,15 @@ class TradeExecutor:
                 sell_amount = btc * (percentage / 100)
                 current_price = balance["current_price"]
                 
-                if sell_amount * current_price < 5000:
+                if sell_amount * current_price < settings.UPBIT_MIN_ORDER_KRW:
                     return False
-                
+
                 order = self.upbit.sell_market_order("KRW-BTC", sell_amount)
-                
+
                 if order:
                     self.last_trade_time = time.time()
                     self.daily_trades += 1
-                    
+
                     source = "stop_loss" if pnl_percentage < 0 else "take_profit"
                     self._log_trade("sell", percentage, reason, source, 
                                    reason, pnl_percentage, balance)
@@ -189,8 +187,8 @@ class TradeExecutor:
                    balance: Dict, reflection: str = "", model: str = ""):
         """거래 로깅"""
         try:
-            # 최신 잔고 조회
-            time.sleep(1)
+            # 최신 잔고 조회 (거래소 반영 대기)
+            time.sleep(settings.BALANCE_REFRESH_DELAY)
             updated_balance = self.get_balance()
 
             data = {
