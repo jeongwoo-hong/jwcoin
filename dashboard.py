@@ -911,18 +911,18 @@ def render_us_stock_dashboard(days):
     c1, c2 = st.columns(2)
     with c1:
         st.caption("포트폴리오 추이")
-        st.plotly_chart(create_us_portfolio_chart(portfolio_df), use_container_width=True, config={'displayModeBar': False})
+        st.plotly_chart(create_us_portfolio_chart(portfolio_df), use_container_width=True, config={'displayModeBar': False}, key="us_portfolio_chart")
     with c2:
         st.caption("미실현 손익 추이")
-        st.plotly_chart(create_us_pnl_chart(portfolio_df), use_container_width=True, config={'displayModeBar': False})
+        st.plotly_chart(create_us_pnl_chart(portfolio_df), use_container_width=True, config={'displayModeBar': False}, key="us_pnl_chart")
 
     c1, c2 = st.columns(2)
     with c1:
         st.caption("섹터 성과 (전일 대비)")
-        st.plotly_chart(create_sector_chart(sectors), use_container_width=True, config={'displayModeBar': False})
+        st.plotly_chart(create_sector_chart(sectors), use_container_width=True, config={'displayModeBar': False}, key="us_sector_chart")
     with c2:
         st.caption("거래 유형")
-        st.plotly_chart(create_us_trade_decision_chart(trades_df), use_container_width=True, config={'displayModeBar': False})
+        st.plotly_chart(create_us_trade_decision_chart(trades_df), use_container_width=True, config={'displayModeBar': False}, key="us_trade_decision_chart")
 
     # 거래 기록
     st.markdown("#### 거래 기록")
