@@ -345,6 +345,77 @@ def get_us_portfolio_snapshots(days=30):
     except:
         return pd.DataFrame()
 
+@st.cache_data(ttl=60)
+def get_us_stock_deposits():
+    """미국 주식 입출금 내역 조회"""
+    supabase = get_supabase_client()
+    if not supabase:
+        return pd.DataFrame()
+    try:
+        response = supabase.table("us_stock_deposits").select("*").order("created_at", desc=True).execute()
+        if response.data:
+            df = pd.DataFrame(response.data)
+            ts = pd.to_datetime(df['created_at'])
+            df['created_at'] = ts.dt.tz_convert('Asia/Seoul') if ts.dt.tz else ts.dt.tz_localize('UTC').dt.tz_convert('Asia/Seoul')
+            return df
+        return pd.DataFrame()
+    except:
+        return pd.DataFrame()
+
+def add_us_stock_deposit(amount, deposit_type, memo):
+    """미국 주식 입출금 추가"""
+    supabase = get_supabase_client()
+    if not supabase:
+        return False
+    try:
+        supabase.table("us_stock_deposits").insert({
+            "amount": float(amount),
+            "type": deposit_type,
+            "memo": memo
+        }).execute()
+        return True
+    except:
+        return False
+
+def calculate_us_stock_performance(portfolio_df, deposits_df, trades_df):
+    """미국 주식 실질 수익 계산"""
+    if portfolio_df.empty:
+        return {}
+
+    latest = portfolio_df.iloc[0]
+    current_total = latest.get('total_value', 0)
+
+    # 입출금 계산
+    total_deposits = 0
+    total_withdrawals = 0
+    if not deposits_df.empty:
+        total_deposits = deposits_df[deposits_df['type'] == 'deposit']['amount'].sum()
+        total_withdrawals = deposits_df[deposits_df['type'] == 'withdraw']['amount'].sum()
+    net_deposits = total_deposits - total_withdrawals
+
+    # 실현 손익 (거래 기록에서)
+    realized_pnl = 0
+    if not trades_df.empty and 'pnl' in trades_df.columns:
+        realized_pnl = trades_df['pnl'].sum()
+
+    # 미실현 손익
+    unrealized_pnl = latest.get('unrealized_pnl', 0)
+
+    # 실질 수익 = 현재 총자산 - 순입금
+    real_profit = current_total - net_deposits if net_deposits > 0 else unrealized_pnl
+    real_rate = (real_profit / net_deposits * 100) if net_deposits > 0 else 0
+
+    return {
+        'current_total': current_total,
+        'total_deposits': total_deposits,
+        'total_withdrawals': total_withdrawals,
+        'net_deposits': net_deposits,
+        'realized_pnl': realized_pnl,
+        'unrealized_pnl': unrealized_pnl,
+        'real_profit': real_profit,
+        'real_rate': real_rate,
+    }
+
 @st.cache_data(ttl=300)
 def get_market_indices():
     """주요 시장 지수 조회"""
@@ -874,12 +945,28 @@ def render_us_stock_dashboard(days):
     # 포트폴리오 데이터
     portfolio_df = get_us_portfolio_snapshots(days)
     trades_df = get_us_stock_trades(days)
+    deposits_df = get_us_stock_deposits()
+
+    # 실질 수익 계산
+    perf = calculate_us_stock_performance(portfolio_df, deposits_df, trades_df)
 
     # 포트폴리오 현황
     st.markdown("#### 포트폴리오 현황")
 
     if not portfolio_df.empty:
         latest = portfolio_df.iloc[0]
+
+        # 투자 성과 (입출금 반영)
+        st.markdown("##### 투자 성과")
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("순입금", format_usd(perf.get('net_deposits', 0)))
+        c2.metric("현재 총자산", format_usd(perf.get('current_total', 0)))
+        c3.metric("실질수익", format_usd(perf.get('real_profit', 0)), f"{perf.get('real_rate', 0):+.2f}%")
+        c4.metric("실현손익", format_usd(perf.get('realized_pnl', 0)))
+        c5.metric("미실현손익", format_usd(perf.get('unrealized_pnl', 0)))
+
+        # 자산 현황
+        st.markdown("##### 자산 현황")
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("총 자산", format_usd(latest.get('total_value', 0)))
         c2.metric("현금", format_usd(latest.get('cash', 0)), f"{latest.get('cash_ratio', 0)*100:.1f}%")
@@ -931,75 +1018,88 @@ def render_us_stock_dashboard(days):
         st.caption("거래 유형")
         st.plotly_chart(create_us_trade_decision_chart(trades_df), use_container_width=True, config={'displayModeBar': False}, key="us_trade_decision_chart")
 
-    # 거래 기록
-    st.markdown("#### 거래 기록")
-    if not trades_df.empty:
-        page_size = 15
-        total_records = len(trades_df)
-        total_pages = max(1, (total_records + page_size - 1) // page_size)
+    # 기록 탭
+    st.markdown("#### 기록")
+    us_tab1, us_tab2 = st.tabs(["거래", "입출금"])
 
-        if 'us_trades_page' not in st.session_state:
-            st.session_state.us_trades_page = 1
+    with us_tab1:
+        if not trades_df.empty:
+            page_size = 15
+            total_records = len(trades_df)
+            total_pages = max(1, (total_records + page_size - 1) // page_size)
 
-        col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
-        with col1:
-            if st.button('⏮️', key='us_first'):
+            if 'us_trades_page' not in st.session_state:
                 st.session_state.us_trades_page = 1
-        with col2:
-            if st.button('◀️', key='us_prev'):
-                if st.session_state.us_trades_page > 1:
-                    st.session_state.us_trades_page -= 1
-        with col3:
-            st.markdown(f"<p style='text-align:center; margin-top:8px;'>{st.session_state.us_trades_page} / {total_pages}</p>", unsafe_allow_html=True)
-        with col4:
-            if st.button('▶️', key='us_next'):
-                if st.session_state.us_trades_page < total_pages:
-                    st.session_state.us_trades_page += 1
-        with col5:
-            if st.button('⏭️', key='us_last'):
-                st.session_state.us_trades_page = total_pages
 
-        start_idx = (st.session_state.us_trades_page - 1) * page_size
-        end_idx = start_idx + page_size
-        page_data = trades_df.iloc[start_idx:end_idx].copy()
+            col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
+            with col1:
+                if st.button('⏮️', key='us_first'):
+                    st.session_state.us_trades_page = 1
+            with col2:
+                if st.button('◀️', key='us_prev'):
+                    if st.session_state.us_trades_page > 1:
+                        st.session_state.us_trades_page -= 1
+            with col3:
+                st.markdown(f"<p style='text-align:center; margin-top:8px;'>{st.session_state.us_trades_page} / {total_pages}</p>", unsafe_allow_html=True)
+            with col4:
+                if st.button('▶️', key='us_next'):
+                    if st.session_state.us_trades_page < total_pages:
+                        st.session_state.us_trades_page += 1
+            with col5:
+                if st.button('⏭️', key='us_last'):
+                    st.session_state.us_trades_page = total_pages
 
-        # 컬럼 선택
-        display_cols = ['created_at', 'symbol', 'action', 'quantity', 'price', 'amount']
-        if 'pnl' in page_data.columns:
-            display_cols.append('pnl')
-        if 'model' in page_data.columns:
-            display_cols.append('model')
+            start_idx = (st.session_state.us_trades_page - 1) * page_size
+            end_idx = start_idx + page_size
+            page_data = trades_df.iloc[start_idx:end_idx].copy()
 
-        display = page_data[[c for c in display_cols if c in page_data.columns]].copy()
-        display['created_at'] = display['created_at'].dt.strftime('%m/%d %H:%M')
+            # 컬럼 선택
+            display_cols = ['created_at', 'symbol', 'action', 'quantity', 'price', 'amount']
+            if 'pnl' in page_data.columns:
+                display_cols.append('pnl')
+            if 'model' in page_data.columns:
+                display_cols.append('model')
 
-        if 'action' in display.columns:
-            display['action'] = display['action'].map({'buy': '🟢매수', 'sell': '🔴매도', 'stop_loss': '🛑손절', 'take_profit': '💰익절'})
+            display = page_data[[c for c in display_cols if c in page_data.columns]].copy()
+            display['created_at'] = display['created_at'].dt.strftime('%m/%d %H:%M')
 
-        if 'price' in display.columns:
-            display['price'] = display['price'].apply(lambda x: f"${x:.2f}" if pd.notna(x) else "-")
-        if 'amount' in display.columns:
-            display['amount'] = display['amount'].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "-")
-        if 'pnl' in display.columns:
-            display['pnl'] = display['pnl'].apply(lambda x: f"${x:+.2f}" if pd.notna(x) else "-")
+            if 'action' in display.columns:
+                display['action'] = display['action'].map({'buy': '🟢매수', 'sell': '🔴매도', 'stop_loss': '🛑손절', 'take_profit': '💰익절'})
 
-        if 'model' in display.columns:
-            def format_model(m):
-                if pd.isna(m) or not m:
-                    return "-"
-                if 'sonnet' in str(m).lower():
-                    return '🟣Sonnet'
-                if 'haiku' in str(m).lower():
-                    return '🟢Haiku'
-                return str(m)[:10]
-            display['model'] = display['model'].apply(format_model)
+            if 'price' in display.columns:
+                display['price'] = display['price'].apply(lambda x: f"${x:.2f}" if pd.notna(x) else "-")
+            if 'amount' in display.columns:
+                display['amount'] = display['amount'].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "-")
+            if 'pnl' in display.columns:
+                display['pnl'] = display['pnl'].apply(lambda x: f"${x:+.2f}" if pd.notna(x) else "-")
 
-        col_names = {'created_at': '시간', 'symbol': '종목', 'action': '거래', 'quantity': '수량', 'price': '가격', 'amount': '금액', 'pnl': '손익', 'model': '모델'}
-        display.columns = [col_names.get(c, c) for c in display.columns]
+            if 'model' in display.columns:
+                def format_model(m):
+                    if pd.isna(m) or not m:
+                        return "-"
+                    if 'sonnet' in str(m).lower():
+                        return '🟣Sonnet'
+                    if 'haiku' in str(m).lower():
+                        return '🟢Haiku'
+                    return str(m)[:10]
+                display['model'] = display['model'].apply(format_model)
 
-        st.dataframe(display, use_container_width=True, hide_index=True, height=400)
-    else:
-        st.info("거래 기록이 없습니다.")
+            col_names = {'created_at': '시간', 'symbol': '종목', 'action': '거래', 'quantity': '수량', 'price': '가격', 'amount': '금액', 'pnl': '손익', 'model': '모델'}
+            display.columns = [col_names.get(c, c) for c in display.columns]
+
+            st.dataframe(display, use_container_width=True, hide_index=True, height=400)
+        else:
+            st.info("거래 기록이 없습니다.")
+
+    with us_tab2:
+        if not deposits_df.empty:
+            dep = deposits_df.copy()
+            dep['created_at'] = dep['created_at'].dt.strftime('%m/%d %H:%M')
+            dep['type'] = dep['type'].map({'deposit': '🟢입금', 'withdraw': '🔴출금'})
+            dep['amount'] = dep['amount'].apply(lambda x: f"${x:,.2f}")
+            st.dataframe(dep[['created_at', 'type', 'amount', 'memo']].head(20), use_container_width=True, hide_index=True, column_config={'created_at': '시간', 'type': '유형', 'amount': '금액', 'memo': '메모'})
+        else:
+            st.info("입출금 기록 없음. 설정에서 초기 입금액을 추가하세요.")
 
     # 푸터
     st.divider()
@@ -1102,6 +1202,25 @@ def main():
         render_coin_dashboard(days, chart_start_date)
 
     with main_tab2:
+        # 미국 주식 설정
+        with st.expander("⚙️ 미국 주식 설정", expanded=False):
+            st.markdown("**💵 입출금 수동 추가 (USD)**")
+            us_col1, us_col2, us_col3 = st.columns(3)
+            with us_col1:
+                us_dep_type = st.selectbox("유형", ["deposit", "withdraw"], format_func=lambda x: "입금" if x == "deposit" else "출금", key="us_dep_type")
+            with us_col2:
+                us_dep_amt = st.number_input("금액 ($)", min_value=0.0, step=100.0, key="us_dep_amt")
+            with us_col3:
+                us_dep_memo = st.text_input("메모", key="us_dep_memo")
+
+            if st.button("입출금 추가", key="us_add_dep"):
+                if us_dep_amt > 0 and add_us_stock_deposit(us_dep_amt, us_dep_type, us_dep_memo):
+                    st.success("완료")
+                    st.cache_data.clear()
+                    st.rerun()
+                else:
+                    st.error("입출금 추가 실패")
+
         render_us_stock_dashboard(days)
 
 if __name__ == "__main__":
