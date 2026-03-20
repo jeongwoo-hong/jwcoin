@@ -1223,17 +1223,15 @@ def render_coin_dashboard(days, chart_start_date):
 
     with tab1:
         if not trades_df.empty:
-            # CSV 다운로드 버튼
+            # 툴바: CSV 다운로드 + 한/영 토글 + 페이지네이션
             csv_data = trades_df.copy()
             csv_data['timestamp'] = csv_data['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
             csv = csv_data.to_csv(index=False, encoding='utf-8-sig')
-            st.download_button(
-                label="📥 CSV 다운로드",
-                data=csv,
-                file_name=f"coin_trades_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv",
-                help="거래 내역을 CSV 파일로 다운로드합니다"
-            )
+
+            # 언어 토글 상태 초기화
+            if 'coin_translate_kr' not in st.session_state:
+                st.session_state.coin_translate_kr = False
+
             # 거래금액 계산 (총자산 × 거래비율)
             trades_df['trade_amount'] = (trades_df['krw_balance'] + trades_df['btc_balance'] * trades_df['btc_krw_price']) * trades_df['percentage'] / 100
 
@@ -1254,23 +1252,34 @@ def render_coin_dashboard(days, chart_start_date):
             if 'coin_trades_page' not in st.session_state:
                 st.session_state.coin_trades_page = 1
 
-            col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
-            with col1:
-                if st.button('⏮️', key='coin_first'):
-                    st.session_state.coin_trades_page = 1
-            with col2:
-                if st.button('◀️', key='coin_prev'):
+            # 컴팩트 툴바
+            tb1, tb2, tb3, tb4, tb5, tb6, tb7 = st.columns([1.5, 1.5, 0.8, 0.8, 1.2, 0.8, 0.8])
+            with tb1:
+                st.download_button("📥CSV", csv, f"coin_trades_{datetime.now().strftime('%Y%m%d')}.csv", "text/csv", key="coin_csv")
+            with tb2:
+                if st.button("🇰🇷한글" if not st.session_state.coin_translate_kr else "🇺🇸영어", key="coin_lang"):
+                    st.session_state.coin_translate_kr = not st.session_state.coin_translate_kr
+                    st.rerun()
+            with tb3:
+                if st.button('◀', key='coin_prev'):
                     if st.session_state.coin_trades_page > 1:
                         st.session_state.coin_trades_page -= 1
-            with col3:
-                st.markdown(f"<p style='text-align:center; margin-top:8px;'>{st.session_state.coin_trades_page} / {total_pages}</p>", unsafe_allow_html=True)
-            with col4:
-                if st.button('▶️', key='coin_next'):
+                        st.rerun()
+            with tb4:
+                if st.button('▶', key='coin_next'):
                     if st.session_state.coin_trades_page < total_pages:
                         st.session_state.coin_trades_page += 1
-            with col5:
-                if st.button('⏭️', key='coin_last'):
+                        st.rerun()
+            with tb5:
+                st.caption(f"{st.session_state.coin_trades_page}/{total_pages}")
+            with tb6:
+                if st.button('⏮', key='coin_first'):
+                    st.session_state.coin_trades_page = 1
+                    st.rerun()
+            with tb7:
+                if st.button('⏭', key='coin_last'):
                     st.session_state.coin_trades_page = total_pages
+                    st.rerun()
 
             start_idx = (st.session_state.coin_trades_page - 1) * page_size
             end_idx = start_idx + page_size
@@ -1300,13 +1309,14 @@ def render_coin_dashboard(days, chart_start_date):
             if 'trade_amount' in display.columns:
                 display['trade_amount'] = display['trade_amount'].apply(lambda x: f"₩{x:,.0f}" if pd.notna(x) else "-")
 
-            # reason 번역 적용 (전체 텍스트 유지)
+            # reason 포맷팅 (번역 토글에 따라)
             def format_reason(x):
                 if pd.isna(x) or not x:
                     return "-"
                 text = str(x)
-                translated = translate_to_korean(text[:500])  # 더 긴 텍스트 허용
-                return translated
+                if st.session_state.coin_translate_kr:
+                    return translate_to_korean(text[:500])
+                return text[:200] + "..." if len(text) > 200 else text
             display['reason'] = display['reason'].apply(format_reason)
 
             display['btc_balance'] = display['btc_balance'].apply(lambda x: f"{x:.4f}")
@@ -1519,18 +1529,14 @@ def render_us_stock_dashboard(days):
 
     with us_tab1:
         if not trades_df.empty:
-            # CSV 다운로드 버튼
+            # CSV 데이터 준비
             csv_data = trades_df.copy()
             csv_data['created_at'] = csv_data['created_at'].dt.strftime('%Y-%m-%d %H:%M:%S')
             us_csv = csv_data.to_csv(index=False, encoding='utf-8-sig')
-            st.download_button(
-                label="📥 CSV 다운로드",
-                data=us_csv,
-                file_name=f"us_stock_trades_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv",
-                help="거래 내역을 CSV 파일로 다운로드합니다",
-                key="us_csv_download"
-            )
+
+            # 언어 토글 상태 초기화
+            if 'us_translate_kr' not in st.session_state:
+                st.session_state.us_translate_kr = False
 
             page_size = 15
             total_records = len(trades_df)
@@ -1539,23 +1545,34 @@ def render_us_stock_dashboard(days):
             if 'us_trades_page' not in st.session_state:
                 st.session_state.us_trades_page = 1
 
-            col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
-            with col1:
-                if st.button('⏮️', key='us_first'):
-                    st.session_state.us_trades_page = 1
-            with col2:
-                if st.button('◀️', key='us_prev'):
+            # 컴팩트 툴바
+            tb1, tb2, tb3, tb4, tb5, tb6, tb7 = st.columns([1.5, 1.5, 0.8, 0.8, 1.2, 0.8, 0.8])
+            with tb1:
+                st.download_button("📥CSV", us_csv, f"us_stock_trades_{datetime.now().strftime('%Y%m%d')}.csv", "text/csv", key="us_csv")
+            with tb2:
+                if st.button("🇰🇷한글" if not st.session_state.us_translate_kr else "🇺🇸영어", key="us_lang"):
+                    st.session_state.us_translate_kr = not st.session_state.us_translate_kr
+                    st.rerun()
+            with tb3:
+                if st.button('◀', key='us_prev'):
                     if st.session_state.us_trades_page > 1:
                         st.session_state.us_trades_page -= 1
-            with col3:
-                st.markdown(f"<p style='text-align:center; margin-top:8px;'>{st.session_state.us_trades_page} / {total_pages}</p>", unsafe_allow_html=True)
-            with col4:
-                if st.button('▶️', key='us_next'):
+                        st.rerun()
+            with tb4:
+                if st.button('▶', key='us_next'):
                     if st.session_state.us_trades_page < total_pages:
                         st.session_state.us_trades_page += 1
-            with col5:
-                if st.button('⏭️', key='us_last'):
+                        st.rerun()
+            with tb5:
+                st.caption(f"{st.session_state.us_trades_page}/{total_pages}")
+            with tb6:
+                if st.button('⏮', key='us_first'):
+                    st.session_state.us_trades_page = 1
+                    st.rerun()
+            with tb7:
+                if st.button('⏭', key='us_last'):
                     st.session_state.us_trades_page = total_pages
+                    st.rerun()
 
             start_idx = (st.session_state.us_trades_page - 1) * page_size
             end_idx = start_idx + page_size
@@ -1594,14 +1611,18 @@ def render_us_stock_dashboard(days):
                     return str(m)[:10]
                 display['model'] = display['model'].apply(format_model)
 
-            # key_reasons 포맷팅 (리스트 → 문자열)
+            # key_reasons 포맷팅 (번역 토글에 따라)
             if 'key_reasons' in display.columns:
                 def format_reasons(x):
                     if pd.isna(x) or not x:
                         return "-"
                     if isinstance(x, list):
-                        return " | ".join(x[:3])  # 상위 3개만
-                    return str(x)
+                        text = " | ".join(x[:3])
+                    else:
+                        text = str(x)
+                    if st.session_state.us_translate_kr:
+                        return translate_to_korean(text[:500])
+                    return text[:200] + "..." if len(text) > 200 else text
                 display['key_reasons'] = display['key_reasons'].apply(format_reasons)
 
             col_names = {'created_at': '시간', 'symbol': '종목', 'action': '거래', 'quantity': '수량', 'price': '가격', 'amount': '금액', 'pnl': '손익', 'model': '모델', 'key_reasons': '이유'}
@@ -1647,7 +1668,7 @@ def main():
     footer { visibility: hidden; }
     [data-testid="stSidebar"] { display: none !important; }
     [data-testid="collapsedControl"] { display: none !important; }
-    .block-container { padding: 1rem 2rem; max-width: 100%; }
+    .block-container { padding: 0.5rem 1rem; max-width: 100%; }
     h1 { font-size: 1.5rem !important; font-weight: 600 !important; margin-bottom: 0.5rem !important; }
     h2 { font-size: 1.1rem !important; font-weight: 500 !important; margin: 1rem 0 0.5rem 0 !important; }
     h3 { font-size: 1rem !important; font-weight: 500 !important; }
@@ -1657,19 +1678,32 @@ def main():
     .stTabs [data-baseweb="tab-list"] { gap: 8px; }
     .stTabs [data-baseweb="tab"] { border-radius: 8px; padding: 8px 16px; font-size: 0.85rem; }
     .stDataFrame { border-radius: 8px; overflow: hidden; }
-    .stButton > button { border-radius: 8px; font-size: 0.85rem; padding: 0.4rem 1rem; }
+    .stButton > button { border-radius: 8px; font-size: 0.85rem; padding: 0.3rem 0.8rem; min-height: 2rem; }
     hr { margin: 1rem 0; }
+    /* 모바일 최적화 */
+    @media (max-width: 768px) {
+        .block-container { padding: 0.5rem; }
+        [data-testid="stMetric"] { padding: 0.5rem; }
+        [data-testid="stMetricValue"] { font-size: 0.9rem; }
+        h1 { font-size: 1.2rem !important; }
+    }
+    /* 페이지네이션 버튼 스타일 */
+    .pagination-btn button { padding: 0.2rem 0.5rem !important; min-width: 2.5rem; }
     </style>
     """, unsafe_allow_html=True)
 
-    # 헤더
-    col1, col2, col3 = st.columns([2, 1, 1])
+    # 헤더 - 한 줄에 타이틀, 기간, 새로고침
+    st.markdown("""
+    <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.5rem;">
+        <h1 style="margin: 0; font-size: 1.3rem;">📈 JWCoin Dashboard</h1>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col1, col2 = st.columns([3, 1])
     with col1:
-        st.title("📈 JWCoin Dashboard")
+        days = st.selectbox("조회 기간", [7, 14, 30, 60, 90], index=2, format_func=lambda x: f"{x}일", label_visibility="collapsed")
     with col2:
-        days = st.selectbox("조회 기간", [7, 14, 30, 60, 90], index=2, format_func=lambda x: f"{x}일")
-    with col3:
-        if st.button("🔄 새로고침"):
+        if st.button("🔄", help="새로고침"):
             st.cache_data.clear()
             st.rerun()
 
