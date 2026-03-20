@@ -767,39 +767,48 @@ def render_coin_dashboard(days, chart_start_date):
     # 현재 자산
     st.markdown("#### 현재 자산")
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("BTC 보유", f"{latest['btc_balance']:.6f}")
-    c2.metric("BTC 가치", f"₩{format_krw(btc_val)}")
-    c3.metric("KRW 보유", f"₩{format_krw(latest['krw_balance'])}")
-    c4.metric("총 자산", f"₩{format_krw(total_asset)}")
+    c1.metric("BTC 보유", f"{latest['btc_balance']:.6f}",
+              help="현재 업비트 계좌에 보유 중인 비트코인 수량")
+    c2.metric("BTC 가치", f"₩{format_krw(btc_val)}",
+              help="BTC 보유량 × 현재 BTC 시세 (원화 환산)")
+    c3.metric("KRW 보유", f"₩{format_krw(latest['krw_balance'])}",
+              help="현재 업비트 계좌의 원화 잔고")
+    c4.metric("총 자산", f"₩{format_krw(total_asset)}",
+              help="BTC 가치 + KRW 보유 = 전체 자산")
 
     # 투자 성과
     st.markdown("#### 투자 성과")
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("순입금", f"₩{format_krw(perf.get('net_deposits', 0))}")
-    c2.metric("현재 총자산", f"₩{format_krw(perf.get('current_total', 0))}")
-    c3.metric("실질수익", f"₩{format_krw(perf.get('real_profit', 0))}", f"{perf.get('real_rate', 0):+.2f}%")
-    c4.metric("운영비용", f"₩{format_krw(perf.get('monthly_expenses', 0))}/월")
-    c5.metric("순수익", f"₩{format_krw(perf.get('net_profit', 0))}", f"{perf.get('net_rate', 0):+.2f}%")
+    c1.metric("순입금", f"₩{format_krw(perf.get('net_deposits', 0))}",
+              help="총 입금액 - 총 출금액\n\n실제로 투자에 사용된 원금")
+    c2.metric("현재 총자산", f"₩{format_krw(perf.get('current_total', 0))}",
+              help="BTC 가치 + KRW 잔고\n\n현재 시점의 전체 자산 가치")
+    c3.metric("실질수익", f"₩{format_krw(perf.get('real_profit', 0))}", f"{perf.get('real_rate', 0):+.2f}%",
+              help="현재 총자산 - 순입금\n\n순수하게 투자로 번 금액 (운영비 미차감)")
+    c4.metric("운영비용", f"₩{format_krw(perf.get('monthly_expenses', 0))}/월",
+              help="API 비용 + 서버 비용 + 기타 비용\n\n월 환산 운영 비용")
+    c5.metric("순수익", f"₩{format_krw(perf.get('net_profit', 0))}", f"{perf.get('net_rate', 0):+.2f}%",
+              help="실질수익 - 운영비용\n\n모든 비용을 제외한 최종 수익")
 
     # 차트
     st.markdown("#### 차트")
     c1, c2 = st.columns(2)
     with c1:
-        st.caption(f"자산 증감 ({chart_start_date} 이후)")
+        st.caption(f"📈 자산 증감 ({chart_start_date} 이후)", help="시간에 따른 총 자산(KRW+BTC) 변화\n\nBTC는 현재 시세로 환산")
         st.plotly_chart(create_asset_chart(trades_df, deposits_df, btc_price, chart_start_date), use_container_width=True, config={'displayModeBar': False})
     with c2:
-        st.caption(f"실질 수익 추이 ({chart_start_date} 이후)")
+        st.caption(f"📊 실질 수익 추이 ({chart_start_date} 이후)", help="총 자산 - 순입금 = 실질 수익\n\n0 이상이면 수익, 이하면 손실")
         st.plotly_chart(create_profit_chart(trades_df, deposits_df, btc_price, chart_start_date), use_container_width=True, config={'displayModeBar': False})
 
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.caption("BTC 보유량")
+        st.caption("🪙 BTC 보유량", help="시간에 따른 비트코인 보유량 변화\n\n매수 시 증가, 매도 시 감소")
         st.plotly_chart(create_btc_chart(trades_df), use_container_width=True, config={'displayModeBar': False})
     with c2:
-        st.caption("거래 결정")
+        st.caption("🎯 거래 결정", help="AI 매매 결정 비율\n\n매수/매도/홀드 비율을 파이차트로 표시")
         st.plotly_chart(create_decision_chart(trades_df), use_container_width=True, config={'displayModeBar': False})
     with c3:
-        st.caption("비용 분포")
+        st.caption("💸 비용 분포", help="운영 비용 카테고리별 비율\n\nAPI: Claude/OpenAI 등\n서버: EC2/Railway 등\n기타: 수수료 등")
         st.plotly_chart(create_expense_chart(perf.get('expenses_by_cat', {})), use_container_width=True, config={'displayModeBar': False})
 
     # 기록 탭
@@ -866,8 +875,6 @@ def render_coin_dashboard(days, chart_start_date):
                     return str(m)[:10]
                 display['model'] = display['model'].apply(format_model)
 
-            display['btc_balance'] = display['btc_balance'].apply(lambda x: f"{x:.4f}")
-            display['btc_krw_price'] = display['btc_krw_price'].apply(lambda x: f"{x:,.0f}")
             # reason 번역 적용 (전체 텍스트 유지)
             def format_reason(x):
                 if pd.isna(x) or not x:
@@ -877,7 +884,10 @@ def render_coin_dashboard(days, chart_start_date):
                 return translated
             display['reason'] = display['reason'].apply(format_reason)
 
-            col_names = {'timestamp': '시간', 'decision': '결정', 'percentage': '%', 'source': '출처', 'model': '모델', 'pnl_percentage': '손익', 'btc_balance': 'BTC', 'btc_krw_price': '가격', 'reason': '이유'}
+            display['btc_balance'] = display['btc_balance'].apply(lambda x: f"{x:.4f}")
+            display['btc_krw_price'] = display['btc_krw_price'].apply(lambda x: f"{x:,.0f}")
+
+            col_names = {'timestamp': '시간', 'decision': '결정', 'percentage': '%', 'source': '출처', 'model': '모델', 'pnl_percentage': '손익', 'reason': '이유', 'btc_balance': 'BTC', 'btc_krw_price': '가격'}
             display.columns = [col_names.get(c, c) for c in display.columns]
 
             # column_config로 이유 컬럼 넓게 표시 (클릭 시 전체 내용 표시)
@@ -947,14 +957,24 @@ def render_us_stock_dashboard(days):
     # 헤더 - 시장 지수
     st.markdown("### 📊 미국 주식 자동매매")
 
+    # 지수별 도움말
+    index_help = {
+        "S&P 500": "미국 대형주 500개 종목 지수\n\n미국 주식시장 전체를 대표",
+        "NASDAQ": "기술주 중심 지수\n\n애플, 구글, 아마존 등 포함",
+        "Dow Jones": "우량 대기업 30개 종목 지수\n\n산업 평균 지수",
+        "VIX": "변동성 지수 (공포 지수)\n\n높을수록 시장 불안\n20 이하: 안정, 30 이상: 불안"
+    }
+
     if indices:
         cols = st.columns(len(indices))
         for i, (name, data) in enumerate(indices.items()):
             with cols[i]:
                 if name == "VIX":
-                    st.metric(name, f"{data['price']:.1f}", f"{data['change_pct']:+.2f}%", delta_color="inverse")
+                    st.metric(name, f"{data['price']:.1f}", f"{data['change_pct']:+.2f}%", delta_color="inverse",
+                              help=index_help.get(name, ""))
                 else:
-                    st.metric(name, f"{data['price']:,.0f}", f"{data['change_pct']:+.2f}%")
+                    st.metric(name, f"{data['price']:,.0f}", f"{data['change_pct']:+.2f}%",
+                              help=index_help.get(name, ""))
 
     # 포트폴리오 데이터
     portfolio_df = get_us_portfolio_snapshots(days)
@@ -973,19 +993,28 @@ def render_us_stock_dashboard(days):
         # 투자 성과 (입출금 반영)
         st.markdown("##### 투자 성과")
         c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("순입금", format_usd(perf.get('net_deposits', 0)))
-        c2.metric("현재 총자산", format_usd(perf.get('current_total', 0)))
-        c3.metric("실질수익", format_usd(perf.get('real_profit', 0)), f"{perf.get('real_rate', 0):+.2f}%")
-        c4.metric("실현손익", format_usd(perf.get('realized_pnl', 0)))
-        c5.metric("미실현손익", format_usd(perf.get('unrealized_pnl', 0)))
+        c1.metric("순입금", format_usd(perf.get('net_deposits', 0)),
+                  help="총 입금액 - 총 출금액\n\n실제로 투자에 사용된 원금 (USD)")
+        c2.metric("현재 총자산", format_usd(perf.get('current_total', 0)),
+                  help="현금 + 주식 평가액\n\n현재 시점의 전체 자산 가치")
+        c3.metric("실질수익", format_usd(perf.get('real_profit', 0)), f"{perf.get('real_rate', 0):+.2f}%",
+                  help="현재 총자산 - 순입금\n\n순수하게 투자로 번 금액")
+        c4.metric("실현손익", format_usd(perf.get('realized_pnl', 0)),
+                  help="청산된 거래의 손익 합계\n\n실제로 확정된 수익/손실")
+        c5.metric("미실현손익", format_usd(perf.get('unrealized_pnl', 0)),
+                  help="보유 중인 종목의 평가손익\n\n매도 전까지 확정되지 않은 손익")
 
         # 자산 현황
         st.markdown("##### 자산 현황")
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("총 자산", format_usd(latest.get('total_value', 0)))
-        c2.metric("현금", format_usd(latest.get('cash', 0)), f"{latest.get('cash_ratio', 0)*100:.1f}%")
-        c3.metric("투자금", format_usd(latest.get('invested', 0)))
-        c4.metric("미실현 손익", format_usd(latest.get('unrealized_pnl', 0)), f"{latest.get('unrealized_pnl_pct', 0)*100:+.2f}%")
+        c1.metric("총 자산", format_usd(latest.get('total_value', 0)),
+                  help="현금 + 주식 평가액\n\n포트폴리오 전체 가치")
+        c2.metric("현금", format_usd(latest.get('cash', 0)), f"{latest.get('cash_ratio', 0)*100:.1f}%",
+                  help="투자에 사용 가능한 USD 현금\n\n비율은 총자산 대비 현금 비중")
+        c3.metric("투자금", format_usd(latest.get('invested', 0)),
+                  help="주식에 투자된 금액\n\n보유 종목 × 현재가 합계")
+        c4.metric("미실현 손익", format_usd(latest.get('unrealized_pnl', 0)), f"{latest.get('unrealized_pnl_pct', 0)*100:+.2f}%",
+                  help="(현재가 - 평균단가) × 수량\n\n보유 종목 전체의 평가손익")
 
         # 보유 종목
         positions = latest.get('positions')
@@ -1018,18 +1047,18 @@ def render_us_stock_dashboard(days):
     st.markdown("#### 차트")
     c1, c2 = st.columns(2)
     with c1:
-        st.caption("포트폴리오 추이")
+        st.caption("📈 포트폴리오 추이", help="시간에 따른 총 자산(현금+주식) 변화\n\n포트폴리오 성장 추이를 보여줍니다")
         st.plotly_chart(create_us_portfolio_chart(portfolio_df), use_container_width=True, config={'displayModeBar': False}, key="us_portfolio_chart")
     with c2:
-        st.caption("미실현 손익 추이")
+        st.caption("📊 미실현 손익 추이", help="보유 종목의 평가손익 변화\n\n0 이상이면 수익, 이하면 손실")
         st.plotly_chart(create_us_pnl_chart(portfolio_df), use_container_width=True, config={'displayModeBar': False}, key="us_pnl_chart")
 
     c1, c2 = st.columns(2)
     with c1:
-        st.caption("섹터 성과 (전일 대비)")
+        st.caption("🏢 섹터 성과 (전일 대비)", help="S&P 500 섹터별 전일 대비 등락률\n\n기술/금융/헬스케어 등 11개 섹터\n녹색: 상승, 빨간색: 하락")
         st.plotly_chart(create_sector_chart(sectors), use_container_width=True, config={'displayModeBar': False}, key="us_sector_chart")
     with c2:
-        st.caption("거래 유형")
+        st.caption("🎯 거래 유형", help="AI 매매 결정 비율\n\n매수/매도/손절/익절 비율을 파이차트로 표시")
         st.plotly_chart(create_us_trade_decision_chart(trades_df), use_container_width=True, config={'displayModeBar': False}, key="us_trade_decision_chart")
 
     # 기록 탭
