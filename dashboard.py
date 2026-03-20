@@ -868,18 +868,32 @@ def render_coin_dashboard(days, chart_start_date):
 
             display['btc_balance'] = display['btc_balance'].apply(lambda x: f"{x:.4f}")
             display['btc_krw_price'] = display['btc_krw_price'].apply(lambda x: f"{x:,.0f}")
-            # reason 번역 적용
+            # reason 번역 적용 (전체 텍스트 유지)
             def format_reason(x):
                 if pd.isna(x) or not x:
                     return "-"
                 text = str(x)
-                translated = translate_to_korean(text[:200])  # 번역 API 호출 최적화
-                return translated[:50] + '...' if len(translated) > 50 else translated
+                translated = translate_to_korean(text[:500])  # 더 긴 텍스트 허용
+                return translated
             display['reason'] = display['reason'].apply(format_reason)
 
             col_names = {'timestamp': '시간', 'decision': '결정', 'percentage': '%', 'source': '출처', 'model': '모델', 'pnl_percentage': '손익', 'btc_balance': 'BTC', 'btc_krw_price': '가격', 'reason': '이유'}
             display.columns = [col_names.get(c, c) for c in display.columns]
-            st.dataframe(display, use_container_width=True, hide_index=True, height=400)
+
+            # column_config로 이유 컬럼 넓게 표시 (클릭 시 전체 내용 표시)
+            st.dataframe(
+                display,
+                use_container_width=True,
+                hide_index=True,
+                height=400,
+                column_config={
+                    "이유": st.column_config.TextColumn(
+                        "이유",
+                        width="large",
+                        help="클릭하면 전체 내용을 볼 수 있습니다"
+                    )
+                }
+            )
 
     with tab2:
         if not orders_df.empty:
@@ -1059,6 +1073,8 @@ def render_us_stock_dashboard(days):
                 display_cols.append('pnl')
             if 'model' in page_data.columns:
                 display_cols.append('model')
+            if 'key_reasons' in page_data.columns:
+                display_cols.append('key_reasons')
 
             display = page_data[[c for c in display_cols if c in page_data.columns]].copy()
             display['created_at'] = display['created_at'].dt.strftime('%m/%d %H:%M')
@@ -1084,10 +1100,25 @@ def render_us_stock_dashboard(days):
                     return str(m)[:10]
                 display['model'] = display['model'].apply(format_model)
 
-            col_names = {'created_at': '시간', 'symbol': '종목', 'action': '거래', 'quantity': '수량', 'price': '가격', 'amount': '금액', 'pnl': '손익', 'model': '모델'}
+            # key_reasons 포맷팅 (리스트 → 문자열)
+            if 'key_reasons' in display.columns:
+                def format_reasons(x):
+                    if pd.isna(x) or not x:
+                        return "-"
+                    if isinstance(x, list):
+                        return " | ".join(x[:3])  # 상위 3개만
+                    return str(x)
+                display['key_reasons'] = display['key_reasons'].apply(format_reasons)
+
+            col_names = {'created_at': '시간', 'symbol': '종목', 'action': '거래', 'quantity': '수량', 'price': '가격', 'amount': '금액', 'pnl': '손익', 'model': '모델', 'key_reasons': '이유'}
             display.columns = [col_names.get(c, c) for c in display.columns]
 
-            st.dataframe(display, use_container_width=True, hide_index=True, height=400)
+            # column_config로 이유 컬럼 넓게 표시
+            column_cfg = {}
+            if '이유' in display.columns:
+                column_cfg["이유"] = st.column_config.TextColumn("이유", width="large")
+
+            st.dataframe(display, use_container_width=True, hide_index=True, height=400, column_config=column_cfg if column_cfg else None)
         else:
             st.info("거래 기록이 없습니다.")
 
