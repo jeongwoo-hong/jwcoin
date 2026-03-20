@@ -817,14 +817,18 @@ def render_coin_dashboard(days, chart_start_date):
 
     with tab1:
         if not trades_df.empty:
+            # 거래금액 계산 (총자산 × 거래비율)
+            trades_df['trade_amount'] = (trades_df['krw_balance'] + trades_df['btc_balance'] * trades_df['btc_krw_price']) * trades_df['percentage'] / 100
+
+            # 컬럼 순서: 시간/결정/%/출처/모델/거래금액/이유/BTC/가격
             cols = ['timestamp', 'decision', 'percentage']
             if 'source' in trades_df.columns:
                 cols.append('source')
             if 'model' in trades_df.columns:
                 cols.append('model')
-            if 'pnl_percentage' in trades_df.columns:
-                cols.append('pnl_percentage')
-            cols.extend(['btc_balance', 'btc_krw_price', 'reason'])
+            cols.append('trade_amount')
+            cols.append('reason')
+            cols.extend(['btc_balance', 'btc_krw_price'])
 
             page_size = 15
             total_records = len(trades_df)
@@ -875,6 +879,10 @@ def render_coin_dashboard(days, chart_start_date):
                     return str(m)[:10]
                 display['model'] = display['model'].apply(format_model)
 
+            # 거래금액 포맷팅
+            if 'trade_amount' in display.columns:
+                display['trade_amount'] = display['trade_amount'].apply(lambda x: f"₩{x:,.0f}" if pd.notna(x) else "-")
+
             # reason 번역 적용 (전체 텍스트 유지)
             def format_reason(x):
                 if pd.isna(x) or not x:
@@ -887,7 +895,7 @@ def render_coin_dashboard(days, chart_start_date):
             display['btc_balance'] = display['btc_balance'].apply(lambda x: f"{x:.4f}")
             display['btc_krw_price'] = display['btc_krw_price'].apply(lambda x: f"{x:,.0f}")
 
-            col_names = {'timestamp': '시간', 'decision': '결정', 'percentage': '%', 'source': '출처', 'model': '모델', 'pnl_percentage': '손익', 'reason': '이유', 'btc_balance': 'BTC', 'btc_krw_price': '가격'}
+            col_names = {'timestamp': '시간', 'decision': '결정', 'percentage': '%', 'source': '출처', 'model': '모델', 'trade_amount': '거래금액', 'reason': '이유', 'btc_balance': 'BTC', 'btc_krw_price': '가격'}
             display.columns = [col_names.get(c, c) for c in display.columns]
 
             # column_config로 이유 컬럼 넓게 표시 (클릭 시 전체 내용 표시)
