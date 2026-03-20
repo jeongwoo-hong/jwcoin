@@ -54,6 +54,118 @@ def translate_to_korean(text):
         return f"번역 실패: {e}"
 
 # ============================================================================
+# 성과 분석 함수들
+# ============================================================================
+
+def calculate_trade_stats(trades_df, price_col='btc_krw_price', balance_col='btc_balance'):
+    """거래 통계 계산 (승률, 평균수익 등)"""
+    if trades_df.empty or len(trades_df) < 2:
+        return {'win_rate': 0, 'avg_profit': 0, 'avg_loss': 0, 'profit_factor': 0, 'total_trades': 0}
+
+    df = trades_df.sort_values('timestamp').copy()
+
+    # 각 거래의 손익 계산 (이전 거래 대비)
+    df['total_value'] = df['krw_balance'] + df[balance_col] * df[price_col]
+    df['pnl'] = df['total_value'].diff()
+
+    # 첫 거래 제외
+    df = df.iloc[1:]
+
+    if df.empty:
+        return {'win_rate': 0, 'avg_profit': 0, 'avg_loss': 0, 'profit_factor': 0, 'total_trades': 0}
+
+    wins = df[df['pnl'] > 0]
+    losses = df[df['pnl'] < 0]
+
+    win_rate = len(wins) / len(df) * 100 if len(df) > 0 else 0
+    avg_profit = wins['pnl'].mean() if len(wins) > 0 else 0
+    avg_loss = losses['pnl'].mean() if len(losses) > 0 else 0
+
+    total_profit = wins['pnl'].sum() if len(wins) > 0 else 0
+    total_loss = abs(losses['pnl'].sum()) if len(losses) > 0 else 1
+    profit_factor = total_profit / total_loss if total_loss > 0 else total_profit
+
+    return {
+        'win_rate': win_rate,
+        'avg_profit': avg_profit,
+        'avg_loss': avg_loss,
+        'profit_factor': profit_factor,
+        'total_trades': len(df),
+        'win_count': len(wins),
+        'loss_count': len(losses),
+    }
+
+def calculate_hourly_performance(trades_df):
+    """시간대별 성과 분석"""
+    if trades_df.empty:
+        return pd.DataFrame()
+
+    df = trades_df.copy()
+    df['hour'] = df['timestamp'].dt.hour
+    df['total_value'] = df['krw_balance'] + df['btc_balance'] * df['btc_krw_price']
+    df['pnl'] = df['total_value'].diff()
+
+    hourly = df.groupby('hour').agg({
+        'pnl': ['sum', 'count', 'mean']
+    }).round(0)
+    hourly.columns = ['total_pnl', 'trade_count', 'avg_pnl']
+    hourly = hourly.reset_index()
+
+    return hourly
+
+def calculate_model_performance(trades_df):
+    """모델별 성과 분석"""
+    if trades_df.empty or 'model' not in trades_df.columns:
+        return pd.DataFrame()
+
+    df = trades_df.copy()
+    df['total_value'] = df['krw_balance'] + df['btc_balance'] * df['btc_krw_price']
+    df['pnl'] = df['total_value'].diff()
+
+    # 모델명 정규화
+    def normalize_model(m):
+        if pd.isna(m) or not m:
+            return 'Unknown'
+        m = str(m).lower()
+        if 'sonnet' in m:
+            return 'Sonnet'
+        if 'haiku' in m:
+            return 'Haiku'
+        if 'opus' in m:
+            return 'Opus'
+        return 'Other'
+
+    df['model_name'] = df['model'].apply(normalize_model)
+
+    model_stats = df.groupby('model_name').agg({
+        'pnl': ['sum', 'count', 'mean'],
+    }).round(0)
+    model_stats.columns = ['total_pnl', 'trade_count', 'avg_pnl']
+    model_stats = model_stats.reset_index()
+
+    # 승률 계산
+    for model in model_stats['model_name'].unique():
+        model_df = df[df['model_name'] == model]
+        wins = len(model_df[model_df['pnl'] > 0])
+        total = len(model_df[model_df['pnl'].notna()])
+        model_stats.loc[model_stats['model_name'] == model, 'win_rate'] = (wins / total * 100) if total > 0 else 0
+
+    return model_stats
+
+@st.cache_data(ttl=300)
+def get_btc_history(days=30):
+    """BTC 가격 히스토리 (벤치마크용)"""
+    try:
+        df = pyupbit.get_ohlcv("KRW-BTC", interval="day", count=days)
+        if df is not None and not df.empty:
+            df = df.reset_index()
+            df.columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume', 'value']
+            return df
+    except:
+        pass
+    return pd.DataFrame()
+
+# ============================================================================
 # 코인 관련 함수들
 # ============================================================================
 
@@ -416,6 +528,165 @@ def calculate_us_stock_performance(portfolio_df, deposits_df, trades_df):
         'real_rate': real_rate,
     }
 
+def calculate_us_trade_stats(trades_df):
+    """미국 주식 거래 통계 계산"""
+    if trades_df.empty or 'pnl' not in trades_df.columns:
+        return {'win_rate': 0, 'avg_profit': 0, 'avg_loss': 0, 'profit_factor': 0, 'total_trades': 0, 'win_count': 0, 'loss_count': 0}
+
+    df = trades_df.copy()
+    df = df[df['pnl'].notna()]
+
+    if df.empty:
+        return {'win_rate': 0, 'avg_profit': 0, 'avg_loss': 0, 'profit_factor': 0, 'total_trades': 0, 'win_count': 0, 'loss_count': 0}
+
+    wins = df[df['pnl'] > 0]
+    losses = df[df['pnl'] < 0]
+
+    win_rate = len(wins) / len(df) * 100 if len(df) > 0 else 0
+    avg_profit = wins['pnl'].mean() if len(wins) > 0 else 0
+    avg_loss = losses['pnl'].mean() if len(losses) > 0 else 0
+
+    total_profit = wins['pnl'].sum() if len(wins) > 0 else 0
+    total_loss = abs(losses['pnl'].sum()) if len(losses) > 0 else 1
+    profit_factor = total_profit / total_loss if total_loss > 0 else total_profit
+
+    return {
+        'win_rate': win_rate,
+        'avg_profit': avg_profit,
+        'avg_loss': avg_loss,
+        'profit_factor': profit_factor,
+        'total_trades': len(df),
+        'win_count': len(wins),
+        'loss_count': len(losses),
+    }
+
+def calculate_us_model_performance(trades_df):
+    """미국 주식 모델별 성과 분석"""
+    if trades_df.empty or 'model' not in trades_df.columns or 'pnl' not in trades_df.columns:
+        return pd.DataFrame()
+
+    df = trades_df.copy()
+
+    def normalize_model(m):
+        if pd.isna(m) or not m:
+            return 'Unknown'
+        m = str(m).lower()
+        if 'sonnet' in m:
+            return 'Sonnet'
+        if 'haiku' in m:
+            return 'Haiku'
+        if 'opus' in m:
+            return 'Opus'
+        return 'Other'
+
+    df['model_name'] = df['model'].apply(normalize_model)
+    df = df[df['pnl'].notna()]
+
+    if df.empty:
+        return pd.DataFrame()
+
+    model_stats = df.groupby('model_name').agg({
+        'pnl': ['sum', 'count', 'mean'],
+    }).round(2)
+    model_stats.columns = ['total_pnl', 'trade_count', 'avg_pnl']
+    model_stats = model_stats.reset_index()
+
+    for model in model_stats['model_name'].unique():
+        model_df = df[df['model_name'] == model]
+        wins = len(model_df[model_df['pnl'] > 0])
+        total = len(model_df)
+        model_stats.loc[model_stats['model_name'] == model, 'win_rate'] = (wins / total * 100) if total > 0 else 0
+
+    return model_stats
+
+@st.cache_data(ttl=300)
+def get_sp500_history(days=30):
+    """S&P 500 히스토리 (벤치마크용)"""
+    try:
+        ticker = yf.Ticker("^GSPC")
+        hist = ticker.history(period=f"{days}d")
+        if not hist.empty:
+            hist = hist.reset_index()
+            hist.columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume', 'dividends', 'splits']
+            return hist[['timestamp', 'close']]
+    except:
+        pass
+    return pd.DataFrame()
+
+def create_us_benchmark_chart(portfolio_df, sp500_df):
+    """US 포트폴리오 vs S&P 500 비교 차트"""
+    if portfolio_df.empty:
+        fig = go.Figure()
+        fig.add_annotation(text="데이터 없음", xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
+        fig.update_layout(margin=dict(l=0, r=0, t=30, b=0), height=280, template='plotly_dark')
+        return fig
+
+    df = portfolio_df.sort_values('created_at').copy()
+
+    # 시작점 기준 수익률 계산
+    initial_value = df['total_value'].iloc[0]
+    df['portfolio_return'] = (df['total_value'] / initial_value - 1) * 100
+
+    fig = go.Figure()
+
+    # 포트폴리오 수익률
+    fig.add_trace(go.Scatter(
+        x=df['created_at'], y=df['portfolio_return'],
+        mode='lines', name='포트폴리오',
+        line=dict(color='#00D4AA', width=2)
+    ))
+
+    # S&P 500 수익률
+    if not sp500_df.empty:
+        sp = sp500_df.copy()
+        sp['timestamp'] = pd.to_datetime(sp['timestamp'])
+        initial_sp = sp['close'].iloc[0]
+        sp['sp_return'] = (sp['close'] / initial_sp - 1) * 100
+
+        fig.add_trace(go.Scatter(
+            x=sp['timestamp'], y=sp['sp_return'],
+            mode='lines', name='S&P 500',
+            line=dict(color='#4ECDC4', width=2, dash='dash')
+        ))
+
+    fig.add_hline(y=0, line_dash="dash", line_color="rgba(255,255,255,0.3)")
+    fig.update_layout(
+        margin=dict(l=0, r=0, t=30, b=0),
+        height=280, template='plotly_dark',
+        xaxis=dict(showgrid=False),
+        yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.1)', ticksuffix='%'),
+        legend=dict(orientation='h', y=1.1),
+        showlegend=True
+    )
+    return fig
+
+def create_us_model_chart(model_df):
+    """미국 주식 모델별 성과 차트"""
+    if model_df.empty:
+        fig = go.Figure()
+        fig.add_annotation(text="데이터 없음", xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
+        fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=200, template='plotly_dark')
+        return fig
+
+    colors = ['#00D4AA' if x >= 0 else '#FF6B6B' for x in model_df['total_pnl']]
+
+    fig = go.Figure(data=[go.Bar(
+        x=model_df['model_name'],
+        y=model_df['total_pnl'],
+        marker_color=colors,
+        text=[f"{r:.0f}%" for r in model_df['win_rate']],
+        textposition='outside',
+        textfont_size=12
+    )])
+
+    fig.update_layout(
+        margin=dict(l=0, r=0, t=20, b=0),
+        height=200, template='plotly_dark',
+        xaxis=dict(showgrid=False),
+        yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.1)'),
+    )
+    return fig
+
 @st.cache_data(ttl=300)
 def get_market_indices():
     """주요 시장 지수 조회"""
@@ -625,6 +896,109 @@ def create_expense_chart(by_cat):
     )
     return fig
 
+def create_benchmark_chart(trades_df, btc_history_df, deposits_df, current_price):
+    """포트폴리오 vs BTC 벤치마크 비교 차트"""
+    if trades_df.empty:
+        fig = go.Figure()
+        fig.add_annotation(text="데이터 없음", xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
+        fig.update_layout(margin=dict(l=0, r=0, t=30, b=0), height=280, template='plotly_dark')
+        return fig
+
+    df = trades_df.sort_values('timestamp').copy()
+    price = current_price or df['btc_krw_price'].iloc[-1]
+    df['total'] = df['krw_balance'] + df['btc_balance'] * price
+
+    # 시작점 기준 수익률 계산
+    initial_value = df['total'].iloc[0]
+    df['portfolio_return'] = (df['total'] / initial_value - 1) * 100
+
+    fig = go.Figure()
+
+    # 포트폴리오 수익률
+    fig.add_trace(go.Scatter(
+        x=df['timestamp'], y=df['portfolio_return'],
+        mode='lines', name='포트폴리오',
+        line=dict(color='#00D4AA', width=2)
+    ))
+
+    # BTC 수익률 (있으면)
+    if not btc_history_df.empty:
+        btc = btc_history_df.copy()
+        btc['timestamp'] = pd.to_datetime(btc['timestamp'])
+        initial_btc = btc['close'].iloc[0]
+        btc['btc_return'] = (btc['close'] / initial_btc - 1) * 100
+
+        fig.add_trace(go.Scatter(
+            x=btc['timestamp'], y=btc['btc_return'],
+            mode='lines', name='BTC (Buy & Hold)',
+            line=dict(color='#F7931A', width=2, dash='dash')
+        ))
+
+    fig.add_hline(y=0, line_dash="dash", line_color="rgba(255,255,255,0.3)")
+    fig.update_layout(
+        margin=dict(l=0, r=0, t=30, b=0),
+        height=280, template='plotly_dark',
+        xaxis=dict(showgrid=False),
+        yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.1)', ticksuffix='%'),
+        legend=dict(orientation='h', y=1.1),
+        showlegend=True
+    )
+    return fig
+
+def create_hourly_chart(hourly_df):
+    """시간대별 성과 차트"""
+    if hourly_df.empty:
+        fig = go.Figure()
+        fig.add_annotation(text="데이터 없음", xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
+        fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=200, template='plotly_dark')
+        return fig
+
+    colors = ['#00D4AA' if x >= 0 else '#FF6B6B' for x in hourly_df['total_pnl']]
+
+    fig = go.Figure(data=[go.Bar(
+        x=hourly_df['hour'],
+        y=hourly_df['total_pnl'],
+        marker_color=colors,
+        text=hourly_df['trade_count'],
+        textposition='outside',
+        textfont_size=10
+    )])
+
+    fig.update_layout(
+        margin=dict(l=0, r=0, t=10, b=0),
+        height=200, template='plotly_dark',
+        xaxis=dict(showgrid=False, dtick=3, title='시간 (KST)'),
+        yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.1)'),
+    )
+    return fig
+
+def create_model_chart(model_df):
+    """모델별 성과 차트"""
+    if model_df.empty:
+        fig = go.Figure()
+        fig.add_annotation(text="데이터 없음", xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
+        fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=200, template='plotly_dark')
+        return fig
+
+    colors = ['#00D4AA' if x >= 0 else '#FF6B6B' for x in model_df['total_pnl']]
+
+    fig = go.Figure(data=[go.Bar(
+        x=model_df['model_name'],
+        y=model_df['total_pnl'],
+        marker_color=colors,
+        text=[f"{r:.0f}%" for r in model_df['win_rate']],
+        textposition='outside',
+        textfont_size=12
+    )])
+
+    fig.update_layout(
+        margin=dict(l=0, r=0, t=20, b=0),
+        height=200, template='plotly_dark',
+        xaxis=dict(showgrid=False),
+        yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.1)'),
+    )
+    return fig
+
 # ============================================================================
 # 미국 주식 차트 함수들
 # ============================================================================
@@ -790,6 +1164,21 @@ def render_coin_dashboard(days, chart_start_date):
     c5.metric("순수익", f"₩{format_krw(perf.get('net_profit', 0))}", f"{perf.get('net_rate', 0):+.2f}%",
               help="실질수익 - 운영비용\n\n모든 비용을 제외한 최종 수익")
 
+    # 거래 성과 (승률, 평균수익)
+    trade_stats = calculate_trade_stats(trades_df)
+    st.markdown("#### 거래 성과")
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("승률", f"{trade_stats['win_rate']:.1f}%",
+              help="수익 거래 / 전체 거래 × 100\n\n수익 거래 비율")
+    c2.metric("평균 수익", f"₩{format_krw(trade_stats['avg_profit'])}",
+              help="수익 거래의 평균 이익 금액")
+    c3.metric("평균 손실", f"₩{format_krw(abs(trade_stats['avg_loss']))}",
+              help="손실 거래의 평균 손실 금액")
+    c4.metric("손익비", f"{trade_stats['profit_factor']:.2f}",
+              help="총 수익 / 총 손실\n\n1 이상이면 수익 > 손실")
+    c5.metric("수익/손실", f"{trade_stats['win_count']} / {trade_stats['loss_count']}",
+              help="수익 거래 횟수 / 손실 거래 횟수")
+
     # 차트
     st.markdown("#### 차트")
     c1, c2 = st.columns(2)
@@ -800,16 +1189,33 @@ def render_coin_dashboard(days, chart_start_date):
         st.caption(f"📊 실질 수익 추이 ({chart_start_date} 이후)", help="총 자산 - 순입금 = 실질 수익\n\n0 이상이면 수익, 이하면 손실")
         st.plotly_chart(create_profit_chart(trades_df, deposits_df, btc_price, chart_start_date), use_container_width=True, config={'displayModeBar': False})
 
-    c1, c2, c3 = st.columns(3)
+    # 벤치마크 비교 차트
+    btc_history = get_btc_history(days)
+    c1, c2 = st.columns(2)
     with c1:
+        st.caption("📊 포트폴리오 vs BTC", help="포트폴리오 수익률과 BTC 단순보유(Buy & Hold) 수익률 비교\n\n포트폴리오가 위에 있으면 BTC보다 좋은 성과")
+        st.plotly_chart(create_benchmark_chart(trades_df, btc_history, deposits_df, btc_price), use_container_width=True, config={'displayModeBar': False})
+    with c2:
         st.caption("🪙 BTC 보유량", help="시간에 따른 비트코인 보유량 변화\n\n매수 시 증가, 매도 시 감소")
         st.plotly_chart(create_btc_chart(trades_df), use_container_width=True, config={'displayModeBar': False})
-    with c2:
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
         st.caption("🎯 거래 결정", help="AI 매매 결정 비율\n\n매수/매도/홀드 비율을 파이차트로 표시")
         st.plotly_chart(create_decision_chart(trades_df), use_container_width=True, config={'displayModeBar': False})
-    with c3:
+    with c2:
         st.caption("💸 비용 분포", help="운영 비용 카테고리별 비율\n\nAPI: Claude/OpenAI 등\n서버: EC2/Railway 등\n기타: 수수료 등")
         st.plotly_chart(create_expense_chart(perf.get('expenses_by_cat', {})), use_container_width=True, config={'displayModeBar': False})
+    with c3:
+        model_stats = calculate_model_performance(trades_df)
+        st.caption("🤖 모델별 성과", help="AI 모델별 총 손익 및 승률\n\n막대: 총 손익 (녹색=수익, 빨강=손실)\n숫자: 승률(%)")
+        st.plotly_chart(create_model_chart(model_stats), use_container_width=True, config={'displayModeBar': False})
+
+    # 시간대별 성과
+    hourly_stats = calculate_hourly_performance(trades_df)
+    if not hourly_stats.empty:
+        st.caption("⏰ 시간대별 성과 (KST)", help="각 시간대의 총 손익\n\n막대 위 숫자: 해당 시간대 거래 횟수\n녹색: 수익, 빨강: 손실")
+        st.plotly_chart(create_hourly_chart(hourly_stats), use_container_width=True, config={'displayModeBar': False})
 
     # 기록 탭
     st.markdown("#### 기록")
@@ -817,6 +1223,17 @@ def render_coin_dashboard(days, chart_start_date):
 
     with tab1:
         if not trades_df.empty:
+            # CSV 다운로드 버튼
+            csv_data = trades_df.copy()
+            csv_data['timestamp'] = csv_data['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
+            csv = csv_data.to_csv(index=False, encoding='utf-8-sig')
+            st.download_button(
+                label="📥 CSV 다운로드",
+                data=csv,
+                file_name=f"coin_trades_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                help="거래 내역을 CSV 파일로 다운로드합니다"
+            )
             # 거래금액 계산 (총자산 × 거래비율)
             trades_df['trade_amount'] = (trades_df['krw_balance'] + trades_df['btc_balance'] * trades_df['btc_krw_price']) * trades_df['percentage'] / 100
 
@@ -1024,6 +1441,22 @@ def render_us_stock_dashboard(days):
         c4.metric("미실현 손익", format_usd(latest.get('unrealized_pnl', 0)), f"{latest.get('unrealized_pnl_pct', 0)*100:+.2f}%",
                   help="(현재가 - 평균단가) × 수량\n\n보유 종목 전체의 평가손익")
 
+        # 거래 성과 (승률, 평균수익)
+        us_trade_stats = calculate_us_trade_stats(trades_df)
+        if us_trade_stats['total_trades'] > 0:
+            st.markdown("##### 거래 성과")
+            c1, c2, c3, c4, c5 = st.columns(5)
+            c1.metric("승률", f"{us_trade_stats['win_rate']:.1f}%",
+                      help="수익 거래 / 전체 거래 × 100\n\n수익 거래 비율")
+            c2.metric("평균 수익", format_usd(us_trade_stats['avg_profit']),
+                      help="수익 거래의 평균 이익 금액")
+            c3.metric("평균 손실", format_usd(abs(us_trade_stats['avg_loss'])),
+                      help="손실 거래의 평균 손실 금액")
+            c4.metric("손익비", f"{us_trade_stats['profit_factor']:.2f}",
+                      help="총 수익 / 총 손실\n\n1 이상이면 수익 > 손실")
+            c5.metric("수익/손실", f"{us_trade_stats['win_count']} / {us_trade_stats['loss_count']}",
+                      help="수익 거래 횟수 / 손실 거래 횟수")
+
         # 보유 종목
         positions = latest.get('positions')
         if positions and isinstance(positions, dict):
@@ -1061,6 +1494,17 @@ def render_us_stock_dashboard(days):
         st.caption("📊 미실현 손익 추이", help="보유 종목의 평가손익 변화\n\n0 이상이면 수익, 이하면 손실")
         st.plotly_chart(create_us_pnl_chart(portfolio_df), use_container_width=True, config={'displayModeBar': False}, key="us_pnl_chart")
 
+    # 벤치마크 비교 차트
+    sp500_history = get_sp500_history(days)
+    c1, c2 = st.columns(2)
+    with c1:
+        st.caption("📊 포트폴리오 vs S&P 500", help="포트폴리오 수익률과 S&P 500 수익률 비교\n\n포트폴리오가 위에 있으면 시장보다 좋은 성과")
+        st.plotly_chart(create_us_benchmark_chart(portfolio_df, sp500_history), use_container_width=True, config={'displayModeBar': False}, key="us_benchmark_chart")
+    with c2:
+        us_model_stats = calculate_us_model_performance(trades_df)
+        st.caption("🤖 모델별 성과", help="AI 모델별 총 손익 및 승률\n\n막대: 총 손익 (녹색=수익, 빨강=손실)\n숫자: 승률(%)")
+        st.plotly_chart(create_us_model_chart(us_model_stats), use_container_width=True, config={'displayModeBar': False}, key="us_model_chart")
+
     c1, c2 = st.columns(2)
     with c1:
         st.caption("🏢 섹터 성과 (전일 대비)", help="S&P 500 섹터별 전일 대비 등락률\n\n기술/금융/헬스케어 등 11개 섹터\n녹색: 상승, 빨간색: 하락")
@@ -1075,6 +1519,19 @@ def render_us_stock_dashboard(days):
 
     with us_tab1:
         if not trades_df.empty:
+            # CSV 다운로드 버튼
+            csv_data = trades_df.copy()
+            csv_data['created_at'] = csv_data['created_at'].dt.strftime('%Y-%m-%d %H:%M:%S')
+            us_csv = csv_data.to_csv(index=False, encoding='utf-8-sig')
+            st.download_button(
+                label="📥 CSV 다운로드",
+                data=us_csv,
+                file_name=f"us_stock_trades_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                help="거래 내역을 CSV 파일로 다운로드합니다",
+                key="us_csv_download"
+            )
+
             page_size = 15
             total_records = len(trades_df)
             total_pages = max(1, (total_records + page_size - 1) // page_size)
