@@ -491,19 +491,32 @@ def add_us_stock_deposit(amount, deposit_type, memo):
 
 def calculate_us_stock_performance(portfolio_df, deposits_df, trades_df):
     """미국 주식 실질 수익 계산"""
-    if portfolio_df.empty:
-        return {}
-
-    latest = portfolio_df.iloc[0]
-    current_total = latest.get('total_value', 0)
-
-    # 입출금 계산
+    # 입출금 계산 (항상 먼저)
     total_deposits = 0
     total_withdrawals = 0
     if not deposits_df.empty:
         total_deposits = deposits_df[deposits_df['type'] == 'deposit']['amount'].sum()
         total_withdrawals = deposits_df[deposits_df['type'] == 'withdraw']['amount'].sum()
     net_deposits = total_deposits - total_withdrawals
+
+    # 포트폴리오 스냅샷이 없는 경우 (아직 거래 시스템 미실행)
+    if portfolio_df.empty:
+        # 입금만 있으면 그 금액이 현재 자산 (현금으로 보유 중)
+        return {
+            'current_total': net_deposits,
+            'total_deposits': total_deposits,
+            'total_withdrawals': total_withdrawals,
+            'net_deposits': net_deposits,
+            'realized_pnl': 0,
+            'unrealized_pnl': 0,
+            'real_profit': 0,
+            'real_rate': 0,
+            'cash': net_deposits,
+            'invested': 0,
+        }
+
+    latest = portfolio_df.iloc[0]
+    current_total = latest.get('total_value', 0)
 
     # 실현 손익 (거래 기록에서)
     realized_pnl = 0
@@ -526,6 +539,8 @@ def calculate_us_stock_performance(portfolio_df, deposits_df, trades_df):
         'unrealized_pnl': unrealized_pnl,
         'real_profit': real_profit,
         'real_rate': real_rate,
+        'cash': latest.get('cash', 0),
+        'invested': latest.get('invested', 0),
     }
 
 def calculate_us_trade_stats(trades_df):
@@ -1485,14 +1500,44 @@ def render_us_stock_dashboard(days):
             if pos_data:
                 st.dataframe(pd.DataFrame(pos_data), use_container_width=True, hide_index=True)
     else:
-        st.info("포트폴리오 데이터가 없습니다. 자동매매 시스템이 실행되면 데이터가 표시됩니다.")
+        # 포트폴리오 스냅샷 없지만 입금 내역이 있는 경우
+        if perf.get('net_deposits', 0) > 0:
+            st.info("자동매매 시스템 실행 전입니다. 입금된 현금이 표시됩니다.")
 
-        # 데모 데이터 표시
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("총 자산", "$0.00")
-        c2.metric("현금", "$0.00", "0%")
-        c3.metric("투자금", "$0.00")
-        c4.metric("미실현 손익", "$0.00", "0%")
+            # 투자 성과 (입금 기반)
+            st.markdown("##### 투자 성과")
+            c1, c2, c3, c4, c5 = st.columns(5)
+            c1.metric("순입금", format_usd(perf.get('net_deposits', 0)),
+                      help="총 입금액 - 총 출금액")
+            c2.metric("현재 총자산", format_usd(perf.get('current_total', 0)),
+                      help="현재 현금 보유액")
+            c3.metric("실질수익", format_usd(0), "0.00%",
+                      help="아직 거래 없음")
+            c4.metric("실현손익", format_usd(0),
+                      help="아직 거래 없음")
+            c5.metric("미실현손익", format_usd(0),
+                      help="아직 거래 없음")
+
+            # 자산 현황
+            st.markdown("##### 자산 현황")
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("총 자산", format_usd(perf.get('current_total', 0)),
+                      help="입금된 현금")
+            c2.metric("현금", format_usd(perf.get('cash', perf.get('net_deposits', 0))), "100%",
+                      help="전액 현금 보유 중")
+            c3.metric("투자금", format_usd(0),
+                      help="아직 투자 없음")
+            c4.metric("미실현 손익", format_usd(0), "0.00%",
+                      help="아직 포지션 없음")
+        else:
+            st.info("포트폴리오 데이터가 없습니다. 입금 내역을 추가하거나 자동매매 시스템을 실행하세요.")
+
+            # 빈 데이터 표시
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("총 자산", "$0.00")
+            c2.metric("현금", "$0.00", "0%")
+            c3.metric("투자금", "$0.00")
+            c4.metric("미실현 손익", "$0.00", "0%")
 
     # 차트
     st.markdown("#### 차트")
