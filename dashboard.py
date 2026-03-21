@@ -1324,14 +1324,14 @@ def render_coin_dashboard(days, chart_start_date):
             if 'trade_amount' in display.columns:
                 display['trade_amount'] = display['trade_amount'].apply(lambda x: f"₩{x:,.0f}" if pd.notna(x) else "-")
 
-            # reason 포맷팅 (번역 토글에 따라)
+            # reason 포맷팅 (번역 토글에 따라) - 전체 텍스트 유지
             def format_reason(x):
                 if pd.isna(x) or not x:
                     return "-"
                 text = str(x)
                 if st.session_state.coin_translate_kr:
-                    return translate_to_korean(text[:500])
-                return text[:200] + "..." if len(text) > 200 else text
+                    return translate_to_korean(text)
+                return text
             display['reason'] = display['reason'].apply(format_reason)
 
             display['btc_balance'] = display['btc_balance'].apply(lambda x: f"{x:.4f}")
@@ -1656,18 +1656,18 @@ def render_us_stock_dashboard(days):
                     return str(m)[:10]
                 display['model'] = display['model'].apply(format_model)
 
-            # key_reasons 포맷팅 (번역 토글에 따라)
+            # key_reasons 포맷팅 (번역 토글에 따라) - 전체 텍스트 유지
             if 'key_reasons' in display.columns:
                 def format_reasons(x):
                     if pd.isna(x) or not x:
                         return "-"
                     if isinstance(x, list):
-                        text = " | ".join(x[:3])
+                        text = " | ".join(x)
                     else:
                         text = str(x)
                     if st.session_state.us_translate_kr:
-                        return translate_to_korean(text[:500])
-                    return text[:200] + "..." if len(text) > 200 else text
+                        return translate_to_korean(text)
+                    return text
                 display['key_reasons'] = display['key_reasons'].apply(format_reasons)
 
             col_names = {'created_at': '시간', 'symbol': '종목', 'action': '거래', 'quantity': '수량', 'price': '가격', 'amount': '금액', 'pnl': '손익', 'model': '모델', 'key_reasons': '이유'}
