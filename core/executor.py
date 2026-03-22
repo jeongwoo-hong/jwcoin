@@ -21,12 +21,21 @@ class TradeExecutor:
             os.getenv("UPBIT_SECRET_KEY")
         )
         self.supabase = get_supabase()
-        
+
         self.lock = threading.Lock()
         self.last_trade_time = None
         self.daily_trades = 0
         self.daily_emergency_trades = 0
         self.last_reset_date = datetime.now().date()
+
+        # 방향별 쿨다운 (같은 방향 거래 30분 제한)
+        self.last_trade_direction = None  # "buy" or "sell"
+        self.last_direction_time = None
+        self.DIRECTION_COOLDOWN = 1800  # 30분
+
+        # RSI 제약 설정
+        self.RSI_NO_SELL = 25  # RSI 25 이하면 매도 금지
+        self.RSI_NO_BUY = 75   # RSI 75 이상이면 매수 금지
     
     def _reset_daily_counters(self):
         """일일 카운터 리셋"""
@@ -39,23 +48,59 @@ class TradeExecutor:
     def can_trade(self, is_emergency: bool = False) -> bool:
         """거래 가능 여부 체크"""
         self._reset_daily_counters()
-        
+
         # 일일 제한 체크
         if self.daily_trades >= settings.MAX_DAILY_TRADES:
             logger.warning("Daily trade limit reached")
             return False
-        
+
         if is_emergency and self.daily_emergency_trades >= settings.MAX_DAILY_EMERGENCY:
             logger.warning("Daily emergency trade limit reached")
             return False
-        
+
         # 최소 거래 간격 체크
         if self.last_trade_time:
             elapsed = time.time() - self.last_trade_time
             if elapsed < settings.MIN_TRADE_INTERVAL:
                 logger.info(f"Trade cooldown: {settings.MIN_TRADE_INTERVAL - elapsed:.0f}s remaining")
                 return False
-        
+
+        return True
+
+    def _is_direction_on_cooldown(self, direction: str) -> bool:
+        """같은 방향 거래 쿨다운 체크 (30분)"""
+        if self.last_trade_direction is None or self.last_direction_time is None:
+            return False
+
+        # 같은 방향일 때만 쿨다운 적용
+        if self.last_trade_direction != direction:
+            return False
+
+        elapsed = time.time() - self.last_direction_time
+        if elapsed < self.DIRECTION_COOLDOWN:
+            remaining = self.DIRECTION_COOLDOWN - elapsed
+            logger.info(f"Same direction cooldown ({direction}): {remaining/60:.1f}분 남음")
+            return True
+
+        return False
+
+    def _check_rsi_constraint(self, decision: str, rsi: float) -> bool:
+        """RSI 기반 거래 제약 체크 - True면 거래 가능, False면 거래 금지"""
+        if rsi is None:
+            return True  # RSI 정보 없으면 제약 없음
+
+        # 과매도(RSI < 25)에서 매도 금지
+        if decision in [TradeDecision.SELL, TradeDecision.PARTIAL_SELL]:
+            if rsi < self.RSI_NO_SELL:
+                logger.warning(f"RSI 제약: 과매도(RSI={rsi:.1f})에서 매도 금지")
+                return False
+
+        # 과매수(RSI > 75)에서 매수 금지
+        if decision == TradeDecision.BUY:
+            if rsi > self.RSI_NO_BUY:
+                logger.warning(f"RSI 제약: 과매수(RSI={rsi:.1f})에서 매수 금지")
+                return False
+
         return True
     
     def get_balance(self) -> Dict:
@@ -88,21 +133,30 @@ class TradeExecutor:
     def execute(self, decision: str, percentage: int, reason: str,
                 source: str = "scheduled", trigger_reason: str = "",
                 pnl_percentage: float = None, reflection: str = "",
-                model: str = "") -> bool:
+                model: str = "", rsi: float = None) -> bool:
         """매매 실행"""
         with self.lock:
             is_emergency = source in ["triggered", "stop_loss", "take_profit"]
-            
+
             if not self.can_trade(is_emergency):
                 return False
-            
+
+            # RSI 제약 체크 (과매도에서 매도 금지, 과매수에서 매수 금지)
+            if not self._check_rsi_constraint(decision, rsi):
+                return False
+
+            # 같은 방향 쿨다운 체크 (30분)
+            trade_direction = "buy" if decision == TradeDecision.BUY else "sell"
+            if decision != TradeDecision.HOLD and self._is_direction_on_cooldown(trade_direction):
+                return False
+
             try:
                 balance = self.get_balance()
                 if not balance:
                     return False
-                
+
                 order = None
-                
+
                 if decision == TradeDecision.BUY:
                     krw = balance["krw_balance"]
                     buy_amount = krw * (percentage / 100) * settings.UPBIT_FEE_RATE
@@ -135,6 +189,11 @@ class TradeExecutor:
                     self.daily_trades += 1
                     if is_emergency:
                         self.daily_emergency_trades += 1
+
+                    # 방향별 쿨다운 업데이트 (hold 제외)
+                    if decision != TradeDecision.HOLD:
+                        self.last_trade_direction = trade_direction
+                        self.last_direction_time = time.time()
 
                     # 로깅
                     self._log_trade(decision, percentage, reason, source,

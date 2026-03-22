@@ -119,14 +119,15 @@ def scheduled_trade():
             logger.info(f"AI Decision: {decision.decision} ({decision.percentage}%)")
             logger.info(f"Reason: {decision.reason[:200]}...")
 
-            # 매매 실행
+            # 매매 실행 (RSI 제약 적용)
             executor.execute(
                 decision=decision.decision,
                 percentage=decision.percentage,
                 reason=decision.reason,
                 source="scheduled",
                 reflection=reflection,
-                model=decision.model
+                model=decision.model,
+                rsi=indicators.get("rsi")
             )
 
             # 정기 매매 시간 기록 (긴급 트리거 보호용)
@@ -185,9 +186,9 @@ def monitor_loop():
 def handle_pnl_trigger(pnl_result: dict, indicators: dict, balance: dict):
     """손절/익절 트리거 처리"""
     logger.info(f"PnL Trigger: {pnl_result['message']}")
-    
+
     if not pnl_result["requires_ai"]:
-        # 강제 손절/익절
+        # 강제 손절/익절 (RSI 제약 무시 - 손절은 무조건 실행)
         executor.execute_force_sell(
             percentage=pnl_result["sell_percentage"],
             reason=pnl_result["message"],
@@ -196,10 +197,10 @@ def handle_pnl_trigger(pnl_result: dict, indicators: dict, balance: dict):
     else:
         # AI 판단 요청
         decision = ai_analyzer.pnl_analysis(pnl_result, indicators)
-        
+
         if decision:
             logger.info(f"AI PnL Decision: {decision.decision} ({decision.percentage}%)")
-            
+
             if decision.decision in ["sell", "partial_sell"]:
                 executor.execute(
                     decision=decision.decision,
@@ -208,30 +209,36 @@ def handle_pnl_trigger(pnl_result: dict, indicators: dict, balance: dict):
                     source="stop_loss" if pnl_result["pnl_pct"] < 0 else "take_profit",
                     trigger_reason=pnl_result["message"],
                     pnl_percentage=pnl_result["pnl_pct"],
-                    model=decision.model
+                    model=decision.model,
+                    rsi=indicators.get("rsi")
                 )
 
 def handle_triggers(triggers: list, indicators: dict, balance: dict):
     """일반 트리거 처리"""
     for trigger in triggers:
         logger.info(f"Trigger: {trigger['message']}")
-    
-    # AI 긴급 분석
-    decision = ai_analyzer.emergency_analysis(triggers, indicators, balance)
-    
+
+    # 최근 거래 내역 조회 (AI가 일관성 있게 판단하도록)
+    recent_trades = get_recent_trades_with_reasons(days=1, limit=10)
+
+    # AI 긴급 분석 (최근 거래 내역 포함)
+    decision = ai_analyzer.emergency_analysis(triggers, indicators, balance, recent_trades)
+
     if decision:
         logger.info(f"AI Emergency Decision: {decision.decision} ({decision.percentage}%)")
-        
+
         if decision.decision != "hold":
             trigger_messages = ", ".join([t["message"] for t in triggers])
 
+            # RSI 제약 + 방향별 쿨다운 적용
             executor.execute(
                 decision=decision.decision,
                 percentage=decision.percentage,
                 reason=decision.reason,
                 source="triggered",
                 trigger_reason=trigger_messages,
-                model=decision.model
+                model=decision.model,
+                rsi=indicators.get("rsi")
             )
 
 # =============================================================================

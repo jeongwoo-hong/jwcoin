@@ -195,13 +195,18 @@ class AIAnalyzer:
             logger.error(f"AI call error: {e}")
             return None
     
-    def emergency_analysis(self, triggers: List[Dict], indicators: Dict, balance_info: Dict) -> Optional[TradingDecision]:
+    def emergency_analysis(self, triggers: List[Dict], indicators: Dict, balance_info: Dict, recent_trades: str = "") -> Optional[TradingDecision]:
         """긴급 분석 (트리거 발동 시)"""
         trigger_messages = "\n".join([t["message"] for t in triggers])
-        
+
         system_prompt = """당신은 비트코인 긴급 매매 판단 전문가입니다.
 트리거가 발동되어 긴급 분석이 필요합니다.
-빠르고 명확하게 판단해주세요.
+
+중요 원칙:
+1. 최근 거래 내역을 반드시 확인하고, 같은 실수를 반복하지 마세요.
+2. RSI가 25 이하(과매도)일 때는 매도하지 마세요 - 반등 가능성이 높습니다.
+3. RSI가 75 이상(과매수)일 때는 매수하지 마세요 - 하락 가능성이 높습니다.
+4. 최근에 같은 방향으로 거래했다면 신중하게 판단하세요.
 
 응답 시 percentage는:
 - buy: 사용 가능한 KRW의 몇 %를 매수할지 (1-100)
@@ -223,7 +228,10 @@ class AIAnalyzer:
 - BTC: {balance_info.get('btc_balance', 0):.6f}
 - KRW: {balance_info.get('krw_balance', 0):,.0f}
 
-빠르게 판단해주세요."""
+최근 거래 내역 (중요 - 반드시 참고):
+{recent_trades if recent_trades else "없음"}
+
+위 내역을 참고하여 일관성 있게 판단해주세요."""
 
         # return self._call_ai(system_prompt, user_prompt, model="gpt-4.1-mini", analysis_type="긴급분석")  # OpenAI
         return self._call_ai(system_prompt, user_prompt, model="claude-haiku-4-5-20251001", analysis_type="긴급분석")
