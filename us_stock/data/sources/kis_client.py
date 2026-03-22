@@ -281,15 +281,40 @@ class KISClient:
                         "unrealized_pnl_pct": float(item.get("evlu_pfls_rt", 0)),
                     })
 
+            # 매수가능금액 조회로 실제 달러 잔고 확인
+            cash_usd = self._get_buyable_cash()
+
             return {
                 "positions": positions,
                 "total_value": float(output2.get("tot_evlu_pfls_amt", 0)) if output2 else 0,
-                "cash_usd": float(output2.get("frcr_dncl_amt_2", 0)) if output2 else 0,
+                "cash_usd": cash_usd,
                 "timestamp": datetime.now(),
             }
         else:
             logger.error(f"Balance fetch error: {data.get('msg1')}")
             return None
+
+    def _get_buyable_cash(self) -> float:
+        """매수가능금액 조회로 달러 잔고 확인"""
+        url = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-psamount"
+        tr_id = "TTTS3007R" if not self.is_paper else "VTTS3007R"
+
+        headers = self._get_headers(tr_id)
+        cano, acnt_prdt_cd = self._get_account_parts()
+
+        params = {
+            "CANO": cano,
+            "ACNT_PRDT_CD": acnt_prdt_cd,
+            "OVRS_EXCG_CD": "NASD",
+            "OVRS_ORD_UNPR": "100",
+            "ITEM_CD": "AAPL",
+        }
+
+        data = self._request_with_retry("GET", url, headers, params=params)
+        if data and data.get("rt_cd") == "0":
+            output = data.get("output", {})
+            return float(output.get("ord_psbl_frcr_amt", 0))
+        return 0.0
 
     # =========================================================================
     # 주문
